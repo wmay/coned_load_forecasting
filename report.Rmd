@@ -1,0 +1,106 @@
+---
+title: "ConEd grid load and Micronet weather summary statistics"
+author: "William May"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(magrittr)
+library(ggplot2)
+opts_chunk$set(echo = FALSE)
+```
+
+# Overview
+
+- institutional constraint: using TV
+
+# Background
+
+- network loads
+- peak temperature and load times
+- reference maps
+- outliers from COGEN, etc.
+
+# Regression model
+
+- yearly differences
+- polynomial vs spline
+
+# Sea Breeze
+
+- sea breeze frequency
+- Gedzelman's figure
+- sea breeze dim from 4pm temperature MDS
+- sea breeze dim from PCA of tv/load regression R2's or MAE, whichever
+  - let's include the first dimension too while we're at it
+
+# Station selection
+
+- stepwise forward selection
+- 10 fold cv
+- results
+
+# TV Forecasts
+
+# Load Forecasts
+
+# References
+
+<!-- # Summer grid loads -->
+
+<!-- ```{r load-data, include=FALSE} -->
+<!-- load23 = read.csv('data/Network Data - SUNY 2023.csv') %>% -->
+<!--   transform(DT = as.POSIXct(DT, tz = 'EDT', '%m/%d/%Y %H:%M:%S')) -->
+<!-- names(load23) = tolower(names(load23)) -->
+<!-- ``` -->
+
+<!-- ```{r hourly-means} -->
+<!-- hour_means = load23 %>% -->
+<!--   aggregate(reading ~ dt, ., sum) %>% -->
+<!--   transform(hour = as.integer(format(dt, '%H'))) %>% -->
+<!--   aggregate(reading ~ hour, ., mean) -->
+<!-- with(hour_means, plot(hour, reading, type = 'l', main = 'Average combined load by hour of day')) -->
+<!-- ``` -->
+
+<!-- ```{r network-means} -->
+<!-- network_mean_peaks = load23 %>% -->
+<!--   transform(day = as.Date(dt)) %>% -->
+<!--   # daily peaks -->
+<!--   aggregate(reading ~ network + day, ., max) %>% -->
+<!--   # network mean -->
+<!--   aggregate(reading ~ network, ., mean) -->
+<!-- with(network_mean_peaks, hist(reading, main = 'Average daily peak load by network')) -->
+<!-- # network_means = load23 %>% -->
+<!-- #   aggregate(reading ~ network, ., mean) -->
+<!-- # with(network_means, hist(reading, main = 'Network average loads')) -->
+<!-- ``` -->
+
+<!-- # Weather -->
+
+<!-- ```{r weather-data, include=FALSE} -->
+<!-- asos = list.files('data/asos', full.names = T) %>% -->
+<!--   lapply(read.csv) %>% -->
+<!--   do.call(rbind, .) %>% -->
+<!--   transform(valid = as.POSIXct(valid, 'UTC', '%Y-%m-%d %H:%M:%S')) -->
+<!-- ``` -->
+
+<!-- ## Temperature differences (heat island) -->
+
+<!-- ```{r temp-diffs} -->
+<!-- asos_means = asos %>% -->
+<!--   subset(!is.na(tmpf)) %>% -->
+<!--   transform(hour = as.integer(format(valid, '%H'))) %>% -->
+<!--   aggregate(tmpf ~ station + hour, ., mean) %>% -->
+<!--   transform(station = paste0('K', station)) -->
+
+<!-- ggplot(asos_means, aes(x = hour, y = tmpf, color = station)) + -->
+<!--   geom_line() -->
+<!-- ``` -->
+
+<!-- ## TV values -->
