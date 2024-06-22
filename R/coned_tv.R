@@ -10,17 +10,6 @@ as_fahrenheit = function(x) (x * 9/5) + 32
 
 lag_vec = function(x, lag = 1, fill = NA) c(rep(fill, lag), head(x, -lag))
 
-dry_wet_ave = function(temp, rh, pres) {
-  # Note: `CalcPsychrometricsFromRelHum` fails with missing data
-  missing = is.na(temp) | is.na(rh) | is.na(pres)
-  wetbulb = rep(NA, length(temp))
-  if (all(missing)) return(wetbulb)
-  wetbulb[!missing] =
-    CalcPsychrometricsFromRelHum(temp[!missing], rh[!missing],
-                                 pres[!missing])$TWetBulb
-  as_fahrenheit((temp + wetbulb) / 2)
-}
-
 rolling_mean3 = function(time, val, units = c('hours', 'days'),
                          weights = rep(1, 3)) {
   units = match.arg(units)
@@ -32,6 +21,42 @@ rolling_mean3 = function(time, val, units = c('hours', 'days'),
     weights[3] * lag_vec(val, 2)
   val3[!valid] = NA
   val3 / sum(weights)
+}
+
+# Round .5 up, unlike R's rounding. This is relevant due to the prevalance of .5
+# in averaged station temps. Using machine epsilon for a poor man's version of
+# `nextafter` in C/Python
+coned_round = function(x) round(x + sqrt(.Machine$double.eps))
+
+# Get wet bulb temperature from temperature (`dbc`) and dewpoint (`dpc`).
+# Pressure is assumed to be 1013.25
+coned_wet_bulb = function(DBC, DPC) {
+  # I'm vaguely curious about where this calculation came from, but not going to
+  # look it up for now
+  PR = 1013.25
+  # my $DB= $ARGV[1];    # Dry Bulb
+  # my $DP= $ARGV[2];    # Dew Point
+  # $DBC=(($DB-32)*5/9);
+  # $DPC=(($DP-32)*5/9);
+  # my $DDEPC=($DBC-$DPC)*0.18;
+  DDEPC = (DBC - DPC) * 0.18
+  # $WBC=${DBC}-(0.035*${DDEPC}-0.00072*${DDEPC}*(${DDEPC}-1))*(${DBC}+${DPC}+95.556-(${PR}/30.474));
+  WBC = DBC - (0.035 * DDEPC - 0.00072 * DDEPC * (DDEPC - 1)) * (DBC + DPC + 95.556 - (PR / 30.474))
+  # $WBF=($WBC*9/5)+32;
+  coned_round(as_fahrenheit(WBC))
+  # we're supposed to round this in fahrenheit here, but can't because our temps
+  # are still in celsius
+}
+
+dry_wet_ave = function(temp, rh, pres) {
+  # Note: `CalcPsychrometricsFromRelHum` fails with missing data
+  missing = is.na(temp) | is.na(rh) | is.na(pres)
+  wetbulb = rep(NA, length(temp))
+  if (all(missing)) return(wetbulb)
+  wetbulb[!missing] =
+    CalcPsychrometricsFromRelHum(temp[!missing], rh[!missing],
+                                 pres[!missing])$TWetBulb
+  as_fahrenheit((temp + wetbulb) / 2)
 }
 
 # Calculate ConEd's "effective temperature": Effective temperature = (ET)

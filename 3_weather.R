@@ -28,7 +28,8 @@ max_times = mean_temps %>%
   by(.$day, function(x) x$time[which.max(x$tair)]) %>%
   as.integer %>%
   as.POSIXct(origin = '1970-01-01')
-hist(as.POSIXlt(max_times)$hour, 24, right = F)
+times_hist = hist(as.POSIXlt(max_times)$hour, 24, right = F)
+saveRDS(times_hist, 'results/weather/max_tmp_times.rds')
 sort(table(as.POSIXlt(max_times)$hour), decreasing = T)
 
 

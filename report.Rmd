@@ -1,11 +1,14 @@
 ---
-title: "ConEd grid load and Micronet weather summary statistics"
+title: "UAlbany/ConEd Micronet and Load Forecasting Project Results"
+subtitle: "Analysis code available at [GitHub](https://github.com/wmay/coned_load_forecasting/releases/tag/v0.1)"
 author: "William May"
 date: '`r format(Sys.Date(), "%B %d, %Y")`'
 output:
-  html_document:
+  pdf_document:
     toc: true
     toc_depth: 2
+bibliography: coned_urban_heat_island.bib
+link-citations: true
 urlcolor: blue
 ---
 
@@ -13,42 +16,558 @@ urlcolor: blue
 library(knitr)
 library(magrittr)
 library(ggplot2)
+library(ggrepel)
+# library(cowplot)
+library(smacof) # this overwrites `transform`, ugh
+transform = base::transform
+source('R/plots.R')
 opts_chunk$set(echo = FALSE)
+
+web_merc = 3857
+
+stations = readRDS('results/station_data/stations.rds') %>%
+  st_transform(web_merc)
+networks = readRDS('results/maps/coned_networks_cleaned.rds') %>%
+  st_transform(web_merc)
+
+# So I have these copyright captions to add to Mapbox maps. Can probably use the
+# bounding box of the maps, along with hjust and vjust to put those captions
+# inside the maps
 ```
 
-# Overview
+# Project overview
 
-- institutional constraint: using TV
+This project has two main objectives. First, to investigate sea breeze effects
+on daily peak utility loads, and to determine whether NYC Micronet weather
+stations can be used to create a more accurate TV variable. Second, to create TV
+and load forecasts, possibly incorporating NYC Micronet observations or other
+weather data available to UAlbany researchers.
 
-# Background
+```{r sea-breeze-freq}
+sea_breeze_freq = readRDS('results/weather/sea_breeze_freq.rds')
+sea_breeze_pct = (100 * prop.table(sea_breeze_freq)[2]) %>%
+  round %>%
+  as.character
+```
 
-- network loads
-- peak temperature and load times
-- reference maps
-- outliers from COGEN, etc.
+```{r system-results-text}
+system_results = readRDS('results/select_stations/system_results.rds')
+sys_pct_improvement = system_results %>%
+  with(100 * (1 - (errors[2, 2] / errors[1, 2]))) %>%
+  round %>%
+  as.character
+```
 
-# Regression model
+For the first objective, we find that sea breezes occur on about
+`r#sea_breeze_pct`% of summer days, and sea breeze patterns appear in individual
+network loads. Compared to the combined TV from NYC and LGA stations, TV
+incorporating other weather stations can predict loads with
+`r#sys_pct_improvement`% less error at the system level. At the individual
+network level, incorporating more stations leads to lower prediction errors for
+networks outside of Manhattan.
 
-- yearly differences
-- polynomial vs spline
+For the second objective, which is still in progress, we plan to use historical
+forecast archives to apply a statistical (possibly machine learning-based)
+forecast calibration. Even modern weather forecast models contain biases that
+can be corrected, so this gives us an advantage over approaches that don't
+include the calibration.
 
-# Sea Breeze
+# Weather and load background
 
-- sea breeze frequency
-- Gedzelman's figure
-- sea breeze dim from 4pm temperature MDS
-- sea breeze dim from PCA of tv/load regression R2's or MAE, whichever
-  - let's include the first dimension too while we're at it
+## Historical patterns
 
-# Station selection
+NYC temperatures tend to peak at around 3 or 4pm, while loads peak slightly
+afterward at 4 or 5pm.
 
-- stepwise forward selection
-- 10 fold cv
-- results
+```{r peak-hours, fig.height=3}
+tmp_hist = readRDS('results/weather/max_tmp_times.rds')
+load_hist = readRDS('results/energy_loads/max_load_times.rds')
+par(mfrow = c(1, 2))
+plot(tmp_hist, main = 'Hour of maximum temperature', xlab = 'Hour (EDT)',
+     xlim = c(9, 23), xaxt = 'n')
+axis(1, at = seq(9, 24, 3))
+plot(load_hist, main = 'Hour of peak load', xlab = 'Hour (EDT)',
+     xlim = c(9, 23), xaxt = 'n')
+axis(1, at = seq(9, 24, 3))
+par(mfrow = c(1, 1))
+```
 
-# TV Forecasts
+Network sizes and loads vary widely. The plots below show that Brooklyn has the
+largest networks both in terms of size and load, while Manhattan has many
+smaller networks that collectively use an enormous amount of power. Peak load
+densities (load per area) vary so widely that we had to adopt a log scale to
+display them.
 
-# Load Forecasts
+```{r network-peaks, fig.height=8}
+network_peaks = readRDS('results/energy_loads/network_peaks.rds')
+p1 = plot_station_data(network_peaks, aes(fill = peak), nyc_base, alpha = .9) +
+  scale_fill_viridis_c('Peak load (MW)', option = 'magma') +
+  theme(legend.justification = c(0, .5), plot.caption = element_text(size = 7))
+p2 = plot_station_data(network_peaks, aes(fill = peak_density), nyc_base, alpha = .9) +
+  scale_fill_viridis_c('Peak density (MW/mi²)', trans = 'log10', option = 'magma') +
+  theme(legend.justification = c(0, .5), plot.caption = element_text(size = 7))
+grid::grid.draw(rbind(ggplotGrob(p1), ggplotGrob(p2), size = 'last'))
+```
+
+## Cogeneration-related outliers
+
+In the individual network load data, we discovered sequences of outliers that
+sometimes persist for weeks. One of the longest-running examples is shown below.
+The plots show comparisons of daily peak loads for network 32M and surrounding
+stations from May through September 2022 (units are MW). The plots show that,
+for every combination of networks except 32M, the relationship between loads is
+stable for all months, with a nearly-linear relationship. Only for network 32M
+does this relationship break down, during a sequence of days in May (colored
+red).
+
+```{r cogen-outliers}
+cogen_data = readRDS('results/load_vs_weather/tv_and_load_uncleaned.rds')
+# rename 'reading' to 'peak' for clarity
+names(cogen_data) = sub('reading', 'peak', names(cogen_data))
+o4 = readRDS('results/load_vs_weather/load_outliers.rds')
+cogen_data %>%
+  subset(year == 2022,
+         select = paste0('peak.', c('32M', '10M', '7M', '22M', '6M'))) %>%
+  pairs(col = factor(o4$outliers[cogen_data$year == 2022, '32M']),
+        main = '32M peak load comparisons (2022, May is red)')
+```
+
+Brian Cerruti was able to tell us that these outliers were caused by maintenance
+at the cogeneration plant at NYU, which is in network 32M. This maintenance
+tends to happen in early May and late September, and explains many of the
+outlier sequences we noticed in other networks.
+
+At the ConEd system level, cogeneration-related changes may be negligible and
+can be ignored, but they're large enough to distort results at the network
+level. It's important to remove these outliers for network-level analyses. For
+the most accurate network-level analysis, it would be ideal to have a dataset
+where the cogeneration maintenance is clearly flagged or where
+cogeneration-related energy use can be separated from other energy use.
+
+## TV/load regression model
+
+To model the TV/load relationship, we use a cubic polynomial regression.
+@nyiso_load_2021 provides background on the cubic polynomial models used in New
+York load modeling.
+
+Two issues arose when applying this regression. The first is identifying
+outliers, notably the cogeneration outliers. Our current solution combines
+robust regression, Tukey's fences[^tukey], and a voting system. We implemented
+this before we understood the cogeneration issue, so it's an ad hoc approach
+rather than a fully-planned solution.
+
+[^tukey]: Many people will know Tukey's fences from its use for boxplots. It
+creates thresholds for outliers based on the interquartile range.
+
+1) First we fit the TV/load polynomial regression using an alternative method
+   based on robust statistics.
+1) We then apply Tukey's fences to the regression residuals. In this step we
+   apply it with a relatively low threshold to identify sequences of outliers
+   with length $\geq$ 5. This is meant to identify the cogeneration maintenance.
+1) For the remaining observations, we apply Tukey's fences again with a higher
+   threshold, to identify isolated outliers.
+1) We repeat steps 1-3 using TV from different weather stations, and only mark
+   observations as outliers when the results from the stations are unanimous. We
+   use a subset of stations spread across NYC for this.
+1) After the outliers have been identified, we then fit the polynomial
+   regression on the remaining data using the normal method.
+
+There's no guarantee that this method will identify every case of cogeneration
+maintenance, so we'd also like to apply a weight of 0.5 to days in the first
+half of May and the last half of September (but this weighting hasn't been
+implemented yet).
+
+We've carefully checked to confirm this outlier detection system works well,
+though we'd still like to simplify the process and adopt methods that are more
+narrowly tailored to this problem.
+
+The second issue is that the TV/load relationship changes from year to year,
+raising the question of how to account for this change within the cubicane
+polynomial model. Some options are
+
+1) allow a different constant term for each year
+1) multiply the values of each year by a scaling factor, and
+1) allow all polynomial coefficients to change each year
+
+The multiplication option can't be implemented in a standard linear regression,
+so we focus on options 1) and 3) here. The equations for these two options are
+shown below:
+
+\begin{align*}
+Y &= \beta_0 year2021 + \beta_1 year2022 + \beta_2 year2023 + \beta_3 \mathrm{TV} + \beta_4 \mathrm{TV}^2 + \beta_5 \mathrm{TV}^3 + \varepsilon \tag{1} \\
+Y &= year2021 \times (\beta_0 + \beta_1 \mathrm{TV} + \beta_2 \mathrm{TV}^2 + \beta_3 \mathrm{TV}^3)\\
+&\quad + year2022 \times (\beta_4 + \beta_5 \mathrm{TV} + \beta_6 \mathrm{TV}^2 + \beta_7 \mathrm{TV}^3) \\
+&\quad + year2023 \times (\beta_8 + \beta_9 \mathrm{TV} + \beta_{10} \mathrm{TV}^2 + \beta_{11} \mathrm{TV}^3) + \varepsilon \tag{3}
+\end{align*}
+
+where the year terms are dummy variables.
+
+```{r pooled-pval}
+pooled_pval = readRDS('results/load_vs_weather/pooled_pval.rds')
+pooled_pval_exp = as.character(ceiling(log10(pooled_pval)))
+```
+
+For each network, we used ANOVA to compare regressions 1) and 3). Each
+comparison provides a p-value for the null hypothesis that equation 3) provides
+no benefit over equation 1). We then pool the p-values from all networks using
+Fisher's method [@fisher_statistical_1925]. The resulting overall p-value is
+less than 10^`r#pooled_pval_exp`^. This result demonstrates that at least some
+networks are changing in ways that aren't captured by regression 1), and these
+changes can't be explained as a random noise. Therefore we use regression 3).
+
+
+# Sea breeze
+
+## Summary statistics and spatial patterns
+
+@gedzelman_mesoscale_2003 provides background information about the NYC sea
+breeze. We apply their definition to identify sea breeze events:
+
+> The criterion used to define a day with a strong sea breeze is that at 1600
+> local time, temperature at NYC must be at least 2.2°C warmer than at JFK, and
+> the southerly component of the wind at JFK must exceed that at NYC by 5 kt.
+
+Using this definitions, sea breeze events occur on about `r#sea_breeze_pct`% of
+days from May through September. Most sea breeze temperature gradients are less
+than 5°F, though a couple have been greater than 10°F.
+
+```{r sea-breeze-gradients, fig.width=4, fig.height=3}
+sea_breeze_gradients = readRDS('results/weather/sea_breeze_gradients.rds')
+hist(sea_breeze_gradients, main = 'NYC - JFK temperatures\n4pm sea breeze days',
+     freq = F, xlab = '°F', ylab = 'Proportion')
+```
+
+@gedzelman_mesoscale_2003 also includes a helpful map of temperatures during a
+sea breeze event (reproduced below). During this event, steep temperature
+gradients run through Staten Island and Manhattan.
+
+```{r sea-breeze-gedzelman}
+include_graphics('papers/gedzelman_sea_breeze.png', dpi = 140)
+```
+
+## Identifying sea breeze impacts using multidimensional scaling and PCA
+
+Because the boundary of the sea breeze varies from day to day, analyzing sea
+breeze patterns at the level of individual temperature observations is
+difficult. To simplify the analysis, we instead examine temperature
+*correlations* between weather stations.
+
+These correlations can be used as a measure of similarity between stations.
+Similarity measures can be used by methods such as multidimensional scaling
+(MDS) or principal components analysis (PCA) to reveal underlying patterns.
+
+MDS takes a matrix of distances or similarities as input, and produces a
+two-dimensional set of coordinates consistent with the distances. For example,
+if the distances are flight times between US cities, MDS will produce city
+coordinates that closely match the layout of US cities.
+
+In this case, we use the R package smacof [@mair_more_2022] to perform MDS on
+4pm temperature correlations. We chose 4pm to match the timing of daily peak
+temperatures and loads. We use the following equation to create the distance
+matrix:
+
+$$
+\mathrm{distance}_{ij} = a + b \sqrt{1 - \mathrm{corr}(\mathrm{TMP}_i, \mathrm{TMP}_j)}
+$$
+
+where $i$ and $j$ are weather stations. The square root transformation is
+recommended by the smacof package to transform correlations into distances, and
+the coefficients $a$ and $b$ are estimated as part of the MDS procedure. The
+offset $a$ accounts for the possibility that correlations may be less than 1
+even at zero distance due to measurement error.
+
+MDS produces the coordinates below (stations are colored by borough and state).
+The coordinates have no physical units, and only reflect relative similarity,
+with closer stations being more similar.
+
+```{r tmp-coordinates}
+tv_coords = readRDS('results/weather/temperature_mds.rds')
+site_boroughs = as.data.frame(stations)[row.names(tv_coords$conf), 'borough']
+site_boroughs[is.na(site_boroughs)] = 'NA'
+plot(tv_coords, col = factor(site_boroughs), cex = 2,
+     label.conf = list(cex = 0.6))
+sb1 = prcomp(tv_coords$conf)
+abline(0, with(sb1, rotation[2, 1] / rotation[1, 1]), lty = 'dashed')
+```
+
+The dashed line shows the direction of the first principle component of the
+coordinates, which is the direction that contains most of the variation in the
+coordinates. When plotted on a map (below), the coordinates along this direction
+resemble the gradient shown in the sea breeze figure from
+@gedzelman_mesoscale_2003. Our conclusion is that this dimension represents sea
+breeze impacts. We don't know of any other process that would create this
+pattern in afternoon temperature correlations.
+
+```{r sea-breeze-mds, fig.height=4, message=FALSE}
+stations %>%
+  transform(`Sea breeze` = sb1$x[stations$stid, 1]) %>%
+  plot_station_data(aes(color = `Sea breeze`, shape = network), size = 3.5) +
+  theme(plot.caption = element_text(size = 7))
+```
+
+The second dimension in these coordinates, at a right angle to the sea breeze
+dimension, seems to be an east-west dimension, which probably reflects weather
+fronts moving across NYC in that direction.
+
+To check that this result is applicable to TV, we ran the same analysis on TV
+values. The results show the same broad pattern, though a bit noisier.
+
+To run a similar analysis that includes ConEd networks, we created a second
+distance matrix, this time based on R^2^ values. In this matrix, the entries are
+defined as
+
+$$
+\mathrm{distance}_{ij} = \sqrt{1 - \mathrm{R}^2_{ij}}
+$$
+
+where $i$ is a ConEd network and $j$ is a weather station. The $\mathrm{R}^2$ is
+taken from the regression of the corresponding network loads and station TV
+values, using the polynomial regression discussed under [TV/load regression
+model](#tvload-regression-model).
+
+These distances are more complicated due to the inclusion of ConEd networks.
+They're affected not just by weather patterns, but also by network properties.
+This causes problems for methods like MDS that attempt to represent the data in
+just a few dimensions.
+
+In this case we get clearer results from PCA. PCA extracts underlying components
+from the data by finding the directions in the data (principal components) that
+have the most variation. The components are ordered by the amount of variance
+they explain, so that the first component explains the most variance.
+
+In our results, the first component represents the overall weather
+predictability (of networks) and predictiveness (of weather stations). Network
+predictability is closely related to network loads, with higher load networks
+being more predictable, and thus having higher R^2^ values. Weather station
+variation is much smaller in this dimension, and we haven't found a physical
+explanation of the values. For example, they have no clear relationship to site
+characteristics.
+
+```{r mds-pca-corr}
+pc_dist = readRDS('results/load_vs_weather/tv_load_pca.rds')
+# make sure to get the stations in the same order for each!
+mds_pca_corr = cor(sb1$x[, 1], pc_dist$rotation[row.names(sb1$x), 2]) %>%
+  abs %>%
+  round(2) %>%
+  as.character
+```
+
+The second component appears to capture the same sea breeze pattern from before,
+and the coordinates are plotted below. The station coordinates from PCA have a
+`r#mds_pca_corr` correlation with the coordinates from MDS, so we're confident
+that both methods have identified the same process. Note that the station and
+network coordinates have different meanings in PCA, so they can't be directly
+compared:
+
+```{r tv-load-coordinates-stations, fig.height=8}
+p1 = stations %>%
+  transform(`Sea breeze` = -pc_dist$rotation[stid, 2]) %>%
+  plot_station_data(aes(color = `Sea breeze`, shape = network), size = 3.5) +
+  theme(legend.justification = c(0, .5), plot.caption = element_text(size = 7))
+p2 = networks %>%
+  transform(`Sea breeze` = pc_dist$x[id, 2]) %>%
+  plot_network_data(aes(fill = `Sea breeze`)) +
+  theme(legend.justification = c(0, .5), plot.caption = element_text(size = 7))
+grid::grid.draw(rbind(ggplotGrob(p1), ggplotGrob(p2), size = 'last'))
+```
+
+Based on these results, we can conclude that:
+
+- the sea breeze is the most important determinant of station-to-station
+  correlations in afternoon temperatures and ConEd's TV
+- at the network level, for regression models that predict peak load using TV,
+  the sea breeze is the most important determinant of prediction accuracy after
+  accounting for network size
+
+These results give us reason to believe that ConEd's TV can be improved by
+including stations from multiple locations along this sea breeze dimension, to
+better reflect weather variation within NYC.
+
+
+# TV station selection
+
+TV's relation to load depends on the weather stations used to calculate it.
+ConEd currently uses NYC and LGA to create TV, while NYISO uses NYC, LGA, and
+JFK to create their CTHI [@nyiso_load_2021, p. 20]. Our goal in this section is
+to estimate how much TV's load prediction accuracy can be improved by including
+additional stations in the TV calculation.
+
+To choose station combinations, we use stepwise forward selection. For each
+combination of stations being considered, we calculate TV[^tv], then we fit the
+cubic polynomial regression discussed under [TV/load regression
+model](#tvload-regression-model). We choose the station combination that
+minimizes the mean squared error. We excluded station JRB due to a large amount
+of missing data.
+
+[^tv]: Our TV calculation does not necessarily follow every detail of the
+    official Con Edison methodology. We don't expect the differences to have any
+    practical impact on the results of this section.
+
+Stepwise forward selection was chosen for its simplicity.
+@moreno-carbonell_rethinking_2020 is an example of a more sophisticated method
+that could be applied. We don't know how much the results would change if we
+used a different method.
+
+We validate this procedure using 10-fold cross validation. For each of 10
+iterations, we run the stepwise forward selection procedure on 9/10ths of the
+data, and the accuracy is measured on the remaining 1/10th. This gives us a
+reliable estimate of the accuracy resulting from this procedure.
+
+For comparison purposes, we also run 10-fold cross validation on the cubic
+polynomial using NYC and LGA stations for TV. The results for both methods are
+shown below. Aside from root mean squared error (RMSE), we also report mean
+absolute error (MAE) because it has a more intuitive explanation. Units are MW.
+
+```{r system-results, results='asis'}
+sys_tv_tab = system_results$errors
+# change to RMSE
+sys_tv_tab[, 1] = sqrt(sys_tv_tab[, 1])
+colnames(sys_tv_tab)[1] = 'rmse'
+# add percent improvement
+sys_tv_tab = addmargins(sys_tv_tab, 1, function(x) {
+  round(100 * (1 - (x[2] / x[1])), 1)
+})
+# clean it up a bit
+sys_tv_tab[1:2, ] = round(sys_tv_tab[1:2, ])
+colnames(sys_tv_tab) = toupper(colnames(sys_tv_tab))
+row.names(sys_tv_tab)[3] = '% improvement'
+# make sure the rounding is displayed how I want it
+sys_tv_tab[1:2, ] = as.character(sys_tv_tab[1:2, ])
+sys_tv_tab[3, ] = format(sys_tv_tab[3, ], nsmall = 1)
+# get station list as text
+sys_stations = paste0(paste(head(system_results$stids, -1), collapse = ', '),
+                      ', and ', tail(system_results$stids, 1))
+kable(sys_tv_tab)
+```
+
+The stepwise forward selection chose stations `r#sys_stations`.
+
+```{r network-improvement-max}
+mae_comparison = readRDS('results/select_stations/mae_comparison.rds')
+network_mae_pdiff = with(mae_comparison, 100 * (1 - (stfor / orig)))
+network_max_red = max(network_mae_pdiff) %>%
+  round %>%
+  as.character
+```
+
+We run the same comparisons for peak loads at the network level. Results are
+shown in the plot below. Stepwise forward site selection provides little to no
+improvement for networks in Manhattan and the Bronx, but networks in other
+boroughs see prediction errors reduced by up to `r#network_max_red`%.
+
+```{r network-improvements, message=FALSE}
+networks %>%
+  transform(mae_pdiff = with(mae_comparison, 100 * (1 - (stfor / orig)))) %>%
+  plot_network_data(aes(fill = mae_pdiff)) +
+  scale_fill_viridis_c('MAE % reduction')
+```
+
+```{r network-station-count}
+stforw_sites_list = readRDS('results/select_stations/selected_sites.rds')
+network_stations_med = median(lengths(stforw_sites_list)) %>%
+  as.character
+```
+
+We also plot the network-level selected stations below, where each colored grid
+cell is a selected station. The axes are ordered by the sea breeze dimension to
+show sea breeze-related patterns. The relationship is noisy, but stations that
+are more effected by the sea breeze are more likely to be selected by networks
+affected by the sea breeze, and vice versa. The median number of selected
+stations is `r#network_stations_med`.
+
+```{r selected-stations, fig.height=9}
+# need to unlist this somehow
+stforw_sites = unlist(stforw_sites_list) %>%
+  { data.frame(network = names(.), stid = .) } %>%
+  transform(network = sub('[0-9]*$', '', network))
+network_sb_order = with(pc_dist, row.names(x)[order(x[, 2])])
+station_sb_order = with(sb1, row.names(x)[order(x[, 1])])
+# JRB shouldn't be in here
+station_sb_order = station_sb_order[station_sb_order != 'JRB']
+stforw_sites %>%
+  transform(network = factor(network, network_sb_order),
+            station = factor(stid, station_sb_order),
+            # This is an odd way to select a column. But it's required due to sf
+            weather_network = stations[stid, ]$network) %>%
+  ggplot(aes(station, network, fill = weather_network)) +
+  geom_tile() +
+  xlab('<-- More sea breeze') +
+  ylab('<-- More sea breeze') +
+  scale_x_discrete(drop = FALSE) +
+  scale_fill_discrete('Weather network', type = hcl.colors(3, 'Dark 3')) +
+  coord_fixed() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))
+```
+
+
+# TV and load forecasts
+
+Physical weather models have biases that can be corrected with statistical and
+machine learning methods [@rasp_neural_2018]. This approach is called model
+output statistics (MOS). MOS is often applied for uses that require accurate
+forecasts.
+
+In contrast, short-term load forecasting (STLF) methods typically use weather
+observations instead of forecasts, so they don't account for weather forecast
+biases [@yang_historical_2022; @ludwig_probabilistic_2023]. This may be because
+historical forecast data has been difficult to obtain until recently, and
+because the data is stored in obscure formats that are difficult to work with.
+
+To forecast TV, we can apply MOS methods that have been shown to work well. This
+is a straightforward application of existing methods.
+
+To forecast load, we can combine elements of MOS and STLF methods. This is a
+more open-ended and exploratory project. We're hoping this will lead to
+improvements over STLF without MOS.
+
+
+# Station and network reference maps
+
+```{r station-map, fig.height=7, message=FALSE}
+plot_station_data(stations, aes(color = network, shape = network), size = 2,
+                  alpha = .7) +
+  scale_color_discrete('Weather network') +
+  geom_text_repel(aes(label = stid, geometry = geometry), stations,
+                  stat = "sf_coordinates", size = 3) +
+  theme(legend.position = 'inside', legend.position.inside = c(0.85, 0.12)) +
+  theme(plot.caption = element_text(size = 7))
+```
+
+```{r network-map, fig.height=6, message=TRUE}
+# will have to be two plots-- get a bounding box for a separate map of southern
+# manhattan
+manh_bbox = st_bbox(subset(networks, Borough == 'Manhattan'))
+manh_bbox[4] = mean(manh_bbox[c(2, 4)]) # remove northern manhattan
+networks$south_manhattan =
+  t(st_contains(st_as_sfc(manh_bbox), networks, sparse = F))
+networks$south_manhattan =
+  with(networks, south_manhattan & Borough == 'Manhattan')
+# refine the bounding box again
+manh_bbox = st_bbox(subset(networks, south_manhattan))
+
+manh_basemap = readRDS('results/maps/manh_basemap.rds')
+
+plot_station_data(networks, aes(), alpha = 0, color = '#989898') +
+  geom_text_repel(aes(label = id, geometry = Shape),
+                  networks[!networks$south_manhattan, ],
+                  stat = "sf_coordinates", size = 3, point.size = NA,
+                  segment.size = .3, min.segment.length = .1, force = .1) +
+  theme(plot.caption = element_text(size = 7))
+```
+
+```{r network-map2, fig.height=6, message=FALSE}
+subset(networks, south_manhattan) %>%
+  plot_station_data(aes(), manh_basemap, alpha = 0, color = '#A8A8A8',
+                    linewidth = .3) +
+  geom_text_repel(aes(label = id, geometry = Shape),
+                  networks[networks$south_manhattan, ], stat = "sf_coordinates",
+                  size = 3, point.size = NA, force = 0.007, segment.size = .3,
+                  min.segment.length = .2) +
+  xlim(manh_bbox[c(1, 3)]) +
+  ylim(manh_bbox[c(2, 4)]) +
+  theme(plot.caption = element_text(size = 7))
+```
+
 
 # References
 

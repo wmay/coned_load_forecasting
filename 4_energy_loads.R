@@ -9,7 +9,7 @@ source('R/plots.R')
 wgs84 = 4326
 web_merc = 3857
 
-loads = list.files('data/coned', '\\.csv', full.names = T) %>%
+loads = list.files('data/coned', 'Network.*\\.csv', full.names = T) %>%
   lapply(read.csv) %>%
   do.call(rbind, .) %>%
   transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M:%S'),
@@ -48,14 +48,17 @@ peaks = loads %>%
 # peak times of day
 peak_times = loads %>%
   subset(!bad) %>%
+  # aggregate loads
+  aggregate(reading ~ dt, ., sum) %>%
   # important to get the time zone correct here
   transform(day = as.Date(dt, tz = 'EST5EDT')) %>%
-  { .[with(., order(network, day, reading, decreasing = T)), ] } %>%
+  { .[with(., order(day, reading, decreasing = T)), ] } %>%
   # get first entry (highest load) for each day
-  { .[!duplicated(.[, c('network', 'day')]), ] } %>%
+  { .[!duplicated(.$day), ] } %>%
   transform(hour = as.POSIXlt(dt)$hour)
 table(peak_times$hour) # mode at 4pm
-hist(peak_times$hour, 24, right = F)
+times_hist = hist(peak_times$hour, 24, right = F)
+saveRDS(times_hist, 'results/energy_loads/max_load_times.rds')
 
 
 
@@ -90,6 +93,7 @@ borough_peaks = loads %>%
 
 #networks$peak_density = with(networks, peak / Shape_Area)
 networks$peak_density = with(networks, peak / (Shape_Area / 5280^2))
+saveRDS(networks, 'results/energy_loads/network_peaks.rds')
 # plot(networks[, 'peak_density'])
 
 # plot_station_data(networks, aes(fill = peak_density), nyc_base, alpha = .9) +

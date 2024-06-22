@@ -21,6 +21,8 @@ source('R/load_data.R')
 source('R/coned_tv.R')
 source('R/plots.R')
 
+cv_seed = 468
+
 excluded_sites = c('MHLSQR', 'JRB')
 
 networks = readRDS('results/maps/coned_networks_cleaned.rds')
@@ -121,7 +123,7 @@ cv_stepwise_forward = function(id, folds = 5) {
   list(mse = mean(mses), mae = mean(maes))
 }
 
-
+mae = function(y, yhat) mean(abs(yhat - y))
 
 
 
@@ -148,9 +150,73 @@ et_wide = et_wide[order(et_wide$time), ]
 
 # saveRDS(et_wide, 'results/select_stations/et.rds')
 
-# cv = cv::cv # this is needed if raster package is loaded for plots
 
-mae = function(y, yhat) mean(abs(yhat - y))
+### System level analysis ###
+
+# this should be changed to use the system data files
+
+# get combined peak loads, ignoring outliers for now
+peaks = read.csv('data/coned/Borough and System Data 2020-2024.csv') %>%
+  transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M'),
+            # some inconsistency, but various forms of 'False' mean data is fine
+            BAD = !startsWith(BAD, 'F')) %>%
+  subset(Borough == 'CECONY') %>%
+  subset(as.POSIXlt(DT)$mon >= 4 & as.POSIXlt(DT)$mon < 9) %>%
+  subset(as.POSIXlt(DT)$year < 2024) %>% # since we don't have all of 2024 yet
+  subset(!BAD & !is.na(DT)) %>%
+  subset(as.POSIXlt(DT)$hour %in% 9:21) %>%
+  # daily peak loads
+  transform(day = as.Date(DT, tz = 'EST5EDT')) %>%
+  aggregate(READING ~ day, ., max)
+names(peaks) = tolower(names(peaks))
+
+cv_mse = peaks %>%
+  transform(year = trunc(day, 'years'),
+            tv = get_combined_tv(sort(c('LGA', 'NYC')))[as.character(day), 'tv']) %>%
+  na.omit %>%
+  lm(reading ~ factor(year) * poly(tv, 3), .) %>%
+  cv(k = 10, seed = cv_seed)
+cv_mse$`CV crit` # 40737.07
+
+cv_mae = peaks %>%
+  transform(year = trunc(day, 'years'),
+            tv = get_combined_tv(sort(c('LGA', 'NYC')))[as.character(day), 'tv']) %>%
+  na.omit %>%
+  lm(reading ~ factor(year) * poly(tv, 3), .) %>%
+  cv(criterion = mae, k = 10, seed = cv_seed)
+cv_mae$`CV crit` # 162.6026
+
+data_wide$reading.total = peaks$reading[match(data_wide$day, peaks$day)]
+
+set.seed(cv_seed)
+combined_stfor_cv = cv_stepwise_forward('total', 10)
+# $mse
+# [1] 36363.01
+# $mae
+# [1] 144.297
+# good improvement
+
+1 - (combined_stfor_cv$mae / cv_mae$`CV crit`) # 11% improvement
+
+combined_stfor = stepwise_forward_ave('total', data_wide)
+combined_stfor$stids
+# [1] "BKNYRD" "BKMAPL" "SIFKIL" "QNSOZO" "BRON"  
+
+# save this
+system_results = list(
+    errors = rbind(c(cv_mse$`CV crit`, cv_mae$`CV crit`),
+                   unlist(combined_stfor_cv)),
+    stids = combined_stfor$stids
+)
+row.names(system_results$errors) = c('NYC+LGA', 'Stepwise forward selection')
+saveRDS(system_results, 'results/select_stations/system_results.rds')
+
+
+
+
+### Network level analysis ###
+
+# cv = cv::cv # this is needed if raster package is loaded for plots
 
 current_mse = sapply(networks$id, function(x) {
   tv_dat = get_combined_tv(sort(c('LGA', 'NYC')))
@@ -160,7 +226,7 @@ current_mse = sapply(networks$id, function(x) {
     na.omit
   # f = load ~ factor(year):(tv + I(tv^2) + I(tv^3))
   f = load ~ factor(year) * poly(tv, 3)
-  cv(lm(f, lm_dat), k = 10)$`CV crit`
+  cv(lm(f, lm_dat), k = 10, seed = cv_seed)$`CV crit`
 })
 
 current_mae = sapply(networks$id, function(x) {
@@ -171,14 +237,14 @@ current_mae = sapply(networks$id, function(x) {
     na.omit
   # f = load ~ factor(year):(tv + I(tv^2) + I(tv^3))
   f = load ~ factor(year) * poly(tv, 3)
-  cv(lm(f, lm_dat), criterion = mae, k = 10)$`CV crit`
+  cv(lm(f, lm_dat), criterion = mae, k = 10, seed = cv_seed)$`CV crit`
 })
 
 
-sort(current_mse, decreasing = T) # seems to be related to network size
-networks %>%
-  transform(current_mse = current_mse[id]) %>%
-  plot_network_data(aes(fill = current_mse))
+# sort(current_mse, decreasing = T) # seems to be related to network size
+# networks %>%
+#   transform(current_mse = current_mse[id]) %>%
+#   plot_network_data(aes(fill = current_mse))
 # with(data_wide, plot(day, reading.6B, type = 'b'))
 
 
@@ -195,13 +261,13 @@ networks %>%
 # # 15.333   0.019  15.367
 # # wow big help already
 
-factorial(28)
+# factorial(28)
 # [1] 3.048883e+29
 # ok so it's simply not feasible to store all of these results
 
 
 # this takes ~10 minutes
-set.seed(123)
+set.seed(cv_seed)
 system.time({
   cv_stforw_list <- lapply(networks$id, function(id) {
     n_iter = which(networks$id == id)
@@ -431,57 +497,6 @@ dev.off()
 #   scale_fill_discrete(type = hcl.colors(3, 'Dark 3'))
 
 
-
-# ok now the combined, network-wide predictions
-
-# get combined peak loads, ignoring outliers for now
-peaks = list.files('data/coned', '\\.csv', full.names = T) %>%
-  lapply(read.csv) %>%
-  do.call(rbind, .) %>%
-  transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M:%S'),
-            # some inconsistency, but various forms of 'False' mean data is fine
-            BAD = !startsWith(BAD, 'F')) %>%
-  # I don't want to worry about individual network outliers here, but what about
-  # data that is clearly marked bad?
-  subset(!BAD & !is.na(DT)) %>%
-  subset(as.POSIXlt(DT)$hour %in% 9:21) %>%
-  # network-wide loads
-  aggregate(READING ~ DT, ., sum, na.rm = T) %>%
-  # daily peak loads
-  transform(day = as.Date(DT, tz = 'EST5EDT')) %>%
-  aggregate(READING ~ day, ., max)
-names(peaks) = tolower(names(peaks))
-
-cv_mse = peaks %>%
-  transform(year = trunc(day, 'years'),
-            tv = get_combined_tv(sort(c('LGA', 'NYC')))[as.character(day), 'tv']) %>%
-  na.omit %>%
-  lm(reading ~ factor(year) * poly(tv, 3), .) %>%
-  cv(k = 10)
-cv_mse$`CV crit` # 40737.07
-
-cv_mae = peaks %>%
-  transform(year = trunc(day, 'years'),
-            tv = get_combined_tv(sort(c('LGA', 'NYC')))[as.character(day), 'tv']) %>%
-  na.omit %>%
-  lm(reading ~ factor(year) * poly(tv, 3), .) %>%
-  cv(criterion = mae, k = 10)
-cv_mae$`CV crit` # 162.6026
-
-data_wide$reading.total = peaks$reading[match(data_wide$day, peaks$day)]
-
-combined_stfor_cv = cv_stepwise_forward('total', 10)
-# $mse
-# [1] 36363.01
-# $mae
-# [1] 144.297
-# good improvement
-
-1 - (combined_stfor_cv$mae / cv_mae$`CV crit`) # 11% improvement
-
-combined_stfor = stepwise_forward_ave('total', data_wide)
-combined_stfor$stids
-# [1] "BKNYRD" "BKMAPL" "QNDKIL" "JFK"    "SIFKIL" "LGA"    "QNSOZO" "MHMHIL"
 
 
 ##### Not sure about this part

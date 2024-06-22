@@ -288,7 +288,7 @@ stations = readRDS('results/station_data/stations.rds')
 # these sites are used for outlier detection
 test_sites = c('SIFKIL', 'JFK', 'BRON')
 
-peaks = list.files('data/coned', '\\.csv', full.names = T) %>%
+peaks = list.files('data/coned', 'Network.*\\.csv', full.names = T) %>%
   lapply(read.csv) %>%
   do.call(rbind, .) %>%
   transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M:%S'),
@@ -587,8 +587,9 @@ hist(network_anovas)
 
 # combine p-values using Fisher's method
 x2 = -2 * sum(log(network_anovas))
-pchisq(x2, df = 2 * length(network_anovas), lower.tail = FALSE)
+pooled_pval = pchisq(x2, df = 2 * length(network_anovas), lower.tail = FALSE)
 # 2.90887e-27
+saveRDS(pooled_pval, 'results/load_vs_weather/pooled_pval.rds')
 
 adj_p = p.adjust(network_anovas)
 adj_p[adj_p < .05]
@@ -596,7 +597,7 @@ adj_p[adj_p < .05]
 # 0.0441906013 0.0148952658 0.0122657404 0.0072943553 0.0383273847 0.0006276768 0.0001077183
 
 # so what's up with those?
-changing_cubic_networks = names(adj_p[adj_p < .05])
+changing_cubic_networks = names(head(sort(adj_p[adj_p < .05])))
 cleaned_reg_data %>%
   subset(select = c('day', 'tv.QNMASP',
                     paste0('reading.', changing_cubic_networks))) %>%
