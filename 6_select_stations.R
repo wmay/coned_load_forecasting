@@ -13,10 +13,10 @@
 # is similar.
 
 library(magrittr)
+library(psychrolib)
 library(cv)
 library(ggplot2)
 library(memoise)
-# library(sf)
 source('R/load_data.R')
 source('R/coned_tv.R')
 source('R/plots.R')
@@ -29,40 +29,33 @@ networks = readRDS('results/maps/coned_networks_cleaned.rds')
 stations = readRDS('results/station_data/stations.rds')
 data_wide = readRDS('results/load_vs_weather/tv_and_load.rds')
 
-get_effective_temp = function(x) {
-  drywet = with(x, dry_wet_ave(tair, relh / 100, pres * 100))
-  eff_temp = rolling_mean3(x$time, drywet, 'hours')
-  hour_of_day = as.integer(format(x$time, '%H'))
-  data.frame(stid = x$stid, time = x$time, eff_temp = eff_temp) %>%
-    subset(hour_of_day >= 9 & hour_of_day <= 21)
-}
-
-# Get combined TV by averaging site dry+wet temperatures first and *then*
-# getting the daily maximum of the averaged values. This ensures that the values
-# are all taken from the same time of day
+# Get combined TV by averaging site temperatures and dewpoints first and then
+# deriving TV. `station_obs` needs to be defined for this to work
 .get_combined_tv = function(stids) {
-  cols = paste0('eff_temp.', stids)
-  combined_temps = rowMeans(et_wide[, cols, drop = FALSE])
-  out = data.frame(time = et_wide$time, eff_temp = combined_temps) %>%
-    transform(day = as.Date(time, tz = 'EST5EDT')) %>%
-    # should `na.rm` be true here? Not sure
-    aggregate(eff_temp ~ day, ., max, na.rm = TRUE) %>%
-    transform(tv = rolling_mean3(day, eff_temp, 'days', c(.7, .2, .1))) %>%
-    subset(select = c(day, tv))
+  tmp_cols = paste0('tmpf.', stids)
+  dwp_cols = paste0('dwpf.', stids)
+  tmps = rowMeans(station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
+  dwps = rowMeans(station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
+  out = coned_tv(station_obs$time, tmps, dwps)
   row.names(out) = as.character(out$day)
   out
 }
 # This is the slowest part of the code and needs to be cached to be practical
-get_combined_tv = memoise(.get_combined_tv,
-                          # 2GB cache
-                          cache = cachem::cache_mem(max_size = 2 * 1024^3))
-# get_combined_tv = .get_combined_tv
+.get_combined_tv_cached =
+  memoise(.get_combined_tv,
+          # 2GB cache
+          cache = cachem::cache_mem(max_size = 2 * 1024^3))
+get_combined_tv = function(stids) {
+  # sort so that cachem recognizes the repeat inputs
+  .get_combined_tv_cached(sort(stids))
+}
+
 
 station_ave_mse = function(stids, network, dat) {
   # tv = rowMeans(dat[, paste0('tv.', stids), drop = FALSE])
   # To get the best performance out of memoise, need to sort the stids
   # consistently
-  tv_dat = get_combined_tv(sort(stids))
+  tv_dat = get_combined_tv(stids)
   lm_dat = data.frame(load = dat[, paste0('reading.', network)],
                       tv = tv_dat[as.character(dat$day), 'tv'],
                       year = dat$year) %>%
@@ -114,7 +107,7 @@ cv_stepwise_forward = function(id, folds = 5) {
     stid_cols = paste0('tv.', stids)
     load = test_data[, load_col]
     fit_j = tail(train_res$fits, 1)[[1]]$fit
-    tv_dat = get_combined_tv(sort(stids))
+    tv_dat = get_combined_tv(stids)
     test_data$tv = tv_dat[as.character(test_data$day), 'tv']
     predicted_load = predict(fit_j, test_data)
     mses[i] = mean((load - predicted_load)^2, na.rm = TRUE)
@@ -128,32 +121,28 @@ mae = function(y, yhat) mean(abs(yhat - y))
 
 
 # first we need to set up the effective temp data
-tv_vars = c('tair', 'relh', 'pres')
-nysm_et = get_combined_nc_data(tv_vars, hour_to_nc_index(7:21)) %>%
-  subset(!(is.na(tair) | is.na(relh) | is.na(pres))) %>%
-  split(.$stid) %>%
-  lapply(get_effective_temp) %>%
-  do.call(rbind, .)
+SetUnitSystem('SI')
+tv_vars = c('tair', 'relh')
+nysm_obs = get_combined_nc_data(tv_vars, hour_to_nc_index(7:21)) %>%
+  subset(!(is.na(tair) | is.na(relh))) %>%
+  transform(dwp = GetTDewPointFromRelHum(tair, relh / 100)) %>%
+  transform(tmpf = as_fahrenheit(tair), dwpf = as_fahrenheit(dwp)) %>%
+  subset(select = c(time, stid, tmpf, dwpf)) %>%
+  reshape(direction = 'wide', idvar = 'time', timevar = 'stid')
 
-asos_et = get_hourly_asos_data(7:21) %>%
-  transform(stid = station, tair = as_celsius(tmpf),
-            pres = alti * 33.8637526, time = valid_hour) %>%
-  subset(!(is.na(tair) | is.na(relh) | is.na(pres))) %>%
-  split(.$stid) %>%
-  lapply(get_effective_temp) %>%
-  do.call(rbind, .)
+asos_obs = get_hourly_asos_data(7:21) %>%
+  transform(stid = station, time = valid_hour) %>%
+  subset(!(is.na(tmpf) | is.na(dwpf))) %>%
+  subset(select = c(time, stid, tmpf, dwpf)) %>%
+  reshape(direction = 'wide', idvar = 'time', timevar = 'stid')
 
-et_wide = rbind(nysm_et, asos_et) %>%
-  reshape(direction = 'wide', idvar = 'time', timevar = 'stid') %>%
+station_obs = merge(nysm_obs, asos_obs, all = T) %>%
   subset(as.Date(time, tz = 'EST5EDT') %in% data_wide$day)
-et_wide = et_wide[order(et_wide$time), ]
 
 # saveRDS(et_wide, 'results/select_stations/et.rds')
 
 
 ### System level analysis ###
-
-# this should be changed to use the system data files
 
 # get combined peak loads, ignoring outliers for now
 peaks = read.csv('data/coned/Borough and System Data 2020-2024.csv') %>%
@@ -172,7 +161,7 @@ names(peaks) = tolower(names(peaks))
 
 cv_mse = peaks %>%
   transform(year = trunc(day, 'years'),
-            tv = get_combined_tv(sort(c('LGA', 'NYC')))[as.character(day), 'tv']) %>%
+            tv = get_combined_tv(c('LGA', 'NYC'))[as.character(day), 'tv']) %>%
   na.omit %>%
   lm(reading ~ factor(year) * poly(tv, 3), .) %>%
   cv(k = 10, seed = cv_seed)
@@ -180,7 +169,7 @@ cv_mse$`CV crit` # 40737.07
 
 cv_mae = peaks %>%
   transform(year = trunc(day, 'years'),
-            tv = get_combined_tv(sort(c('LGA', 'NYC')))[as.character(day), 'tv']) %>%
+            tv = get_combined_tv(c('LGA', 'NYC'))[as.character(day), 'tv']) %>%
   na.omit %>%
   lm(reading ~ factor(year) * poly(tv, 3), .) %>%
   cv(criterion = mae, k = 10, seed = cv_seed)
@@ -219,23 +208,21 @@ saveRDS(system_results, 'results/select_stations/system_results.rds')
 # cv = cv::cv # this is needed if raster package is loaded for plots
 
 current_mse = sapply(networks$id, function(x) {
-  tv_dat = get_combined_tv(sort(c('LGA', 'NYC')))
+  tv_dat = get_combined_tv(c('LGA', 'NYC'))
   tv = tv_dat[as.character(data_wide$day), 'tv']
   lm_dat = data.frame(load = data_wide[, paste0('reading.', x)], tv = tv,
                       year = data_wide$year) %>%
     na.omit
-  # f = load ~ factor(year):(tv + I(tv^2) + I(tv^3))
   f = load ~ factor(year) * poly(tv, 3)
   cv(lm(f, lm_dat), k = 10, seed = cv_seed)$`CV crit`
 })
 
 current_mae = sapply(networks$id, function(x) {
-  tv_dat = get_combined_tv(sort(c('LGA', 'NYC')))
+  tv_dat = get_combined_tv(c('LGA', 'NYC'))
   tv = tv_dat[as.character(data_wide$day), 'tv']
   lm_dat = data.frame(load = data_wide[, paste0('reading.', x)], tv = tv,
                       year = data_wide$year) %>%
     na.omit
-  # f = load ~ factor(year):(tv + I(tv^2) + I(tv^3))
   f = load ~ factor(year) * poly(tv, 3)
   cv(lm(f, lm_dat), criterion = mae, k = 10, seed = cv_seed)$`CV crit`
 })
@@ -267,6 +254,7 @@ current_mae = sapply(networks$id, function(x) {
 
 
 # this takes ~10 minutes
+message('Running network-level stepwise forward selection (takes around 10 minutes)')
 set.seed(cv_seed)
 system.time({
   cv_stforw_list <- lapply(networks$id, function(id) {

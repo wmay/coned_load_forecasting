@@ -1,6 +1,7 @@
 # looking at weather patterns
 
 library(sf)
+library(psychrolib)
 library(ggplot2)
 library(smacof) # this overwrites `transform`, ugh
 transform = base::transform
@@ -170,25 +171,26 @@ stations %>%
 
 
 # do we get the same result with TV?
-tv_vars = c('tair', 'relh', 'pres')
+SetUnitSystem('SI')
+tv_vars = c('tair', 'relh')
 nysm_tv = get_combined_nc_data(tv_vars, hour_to_nc_index(7:21)) %>%
-  subset(!(is.na(tair) | is.na(relh) | is.na(pres))) %>%
+  subset(!(is.na(tair) | is.na(relh))) %>%
+  transform(dwp = GetTDewPointFromRelHum(tair, relh / 100)) %>%
   split(.$stid) %>%
   lapply(function(x) {
-    out = with(x, coned_tv(time, tair, relh / 100, pres * 100))
+    out = with(x, coned_tv(time, as_fahrenheit(tair), as_fahrenheit(dwp)))
     out$stid = x$stid[1]
     out
   }) %>%
   do.call(rbind, .)
 
 asos_tv = get_hourly_asos_data(7:21) %>%
-  transform(stid = station, tair = (tmpf - 32) * (5/9),
-            pres = alti * 33.8637526, time = valid_hour) %>%
-  subset(!(is.na(tair) | is.na(relh) | is.na(pres))) %>%
-  split(.$stid) %>%
+  transform(time = valid_hour) %>%
+  subset(!(is.na(tmpf) | is.na(dwpf))) %>%
+  split(.$station) %>%
   lapply(function(x) {
-    out = with(x, coned_tv(time, tair, relh / 100, pres * 100))
-    out$stid = x$stid[1]
+    out = with(x, coned_tv(time, tmpf, dwpf))
+    out$stid = x$station[1]
     out
   }) %>%
   do.call(rbind, .)
@@ -201,7 +203,7 @@ saveRDS(tv_wide, 'results/weather/tv.rds')
 tv_cor = cor(as.matrix(tv_wide[, -1]), use = 'pairwise.complete.obs')
 colnames(tv_cor) = sub('.*\\.', '', colnames(tv_cor))
 row.names(tv_cor) = sub('.*\\.', '', row.names(tv_cor))
-hist(tv_cor[lower.tri(tv_cor)])
+# hist(tv_cor[lower.tri(tv_cor)])
 
 # remove NAs, which cause problems
 all_missing = apply(tv_cor, 1, function(x) all(is.na(x)))
