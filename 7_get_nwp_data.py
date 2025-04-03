@@ -7,75 +7,16 @@ spack or conda. (I recommend spack.)
 '''
 
 # pip install 'herbie-data[extras]'
-import os, glob, tempfile
+import os, glob
 import numpy as np
 import pandas as pd
 import xarray as xr
-from herbie import Herbie, FastHerbie, wgrib2
-from rechunker import rechunk
+#from herbie import Herbie, FastHerbie, wgrib2
+from herbieplus.herbie import FastRegionHerbie, EnsHerbie
+#from rechunker import rechunk
 
 # first step: download files with Herbie, subset with wgrib2, organize
 
-class SlimHerbie(Herbie):
-    '''This is just like Herbie but with regional subsetting.
-    '''
-    def __init__(self, *args, extent=None, extent_name='region', **kwargs):
-        self.extent = extent
-        self.extent_name = extent_name
-        self.download_full = False
-        super().__init__(*args, **kwargs)
-
-    def download(self, search=None, save_dir=None, overwrite=None, verbose=None,
-                 *args, **kwargs):
-        # check for existing file
-        outFile = self.get_localFilePath(search)
-        if save_dir is not None:
-            outFile = (
-                self.save_dir.expand()
-                / self.model
-                / f"{self.date:%Y%m%d}"
-                / outFile.name
-            )
-        if overwrite is not None:
-            self.overwrite = overwrite
-        if outFile.exists() and not self.overwrite:
-            if verbose:
-                print(f"🌉 Already have local copy --> {outFile}")
-            return outFile
-        # download the full file into a temporary directory and subset with
-        # wgrib2
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            orig_save_dir = self.save_dir
-            self.download_full = True # needed to get the correct path
-            try:
-                full_file = super().download(search=search, save_dir=tmp_dir,
-                                             overwrite=overwrite,
-                                             verbose=verbose, *args, **kwargs)
-            except e:
-                raise e
-            finally:
-                self.download_full = False
-                self.save_dir = orig_save_dir # because download() changes it
-            subset_file = wgrib2.region(full_file, self.extent,
-                                        name=self.extent_name)
-            os.rename(subset_file, outFile)
-        return outFile
-
-    def get_localFilePath(self, search=None):
-        if self.download_full or self.extent is None:
-            return super().get_localFilePath(search=search)
-        path0 = super().get_localFilePath(search=search)
-        new_name = self.extent_name + '_' + path0.name
-        return path0.with_name(new_name)
-
-
-# def download_extent_only(archive, params, extent, name='region'):
-#     '''Download a subset of a grib2 file, and spatially subset the file.
-#     '''
-#     grib_file = archive.download(params)
-#     subset_file = wgrib2.region(grib_file, extent, name=name)
-#     os.remove(grib_file) # delete larger file
-#     return subset_file
 
 
 # GEFS test run
@@ -91,14 +32,10 @@ rasp_params = pd.read_csv('nwp_code/config/gefs_rasp.csv')
 # define the spatial extent for subsetting
 nyc_extent = (285.5, 286.5, 40, 41.5)
 
-archive = Herbie("2023-01-01", model='gefs', save_dir='nwp_data', member=0)
+#archive = Herbie("2023-01-01", model='gefs', save_dir='nwp_data', member=0)
 
-sl_archive = SlimHerbie("2023-01-01", model='gefs', save_dir='nwp_data',
-                        member=0, extent=nyc_extent, extent_name='nyc')
-
-search_string = '|'.join(rasp_params['search'][rasp_params['product'] == 'atmos.5'])
-
-sl_archive.download(search_string)
+# sl_archive = SlimHerbie("2023-01-01", model='gefs', save_dir='nwp_data',
+#                         member=0, extent=nyc_extent, extent_name='nyc')
 
 # archive.PRODUCTS:
 # {'atmos.5': 'Half degree atmos PRIMARY fields (pgrb2ap5); ~83 most common variables.',
@@ -116,7 +53,7 @@ sl_archive.download(search_string)
 # inv4.loc[inv4['variable'] == 'SHTFL', :].iloc[:, 6:]
 
 # concatenate the search strings
-search_string = '|'.join(rasp_params['search'][rasp_params['product'] == 'atmos.25'])
+# search_string = '|'.join(rasp_params['search'][rasp_params['product'] == 'atmos.25'])
 
 # # grab example files to get info about the parameters
 # import cfgrib
@@ -136,15 +73,33 @@ search_string = '|'.join(rasp_params['search'][rasp_params['product'] == 'atmos.
 # try FastHerbie
 runs = pd.date_range(start="2022-03-01 12:00", periods=2, freq='D')
 fxx = range(0, 12, 3)
+members = range(0, 3)
 
-archive = FastHerbie(runs, model='gefs', product='atmos.25', fxx=fxx,
-                      save_dir='nwp_data', member=0)
+# archive = FastHerbie(runs, model='gefs', product='atmos.25', fxx=fxx,
+#                      save_dir='nwp_data', member=0)
 
-# will need to loop through each ensemble member and product, and each object as
-# here:
+# sl_archive = FastRegionHerbie(members, DATES=runs, model='gefs',
+#                               product='atmos.25', fxx=fxx, save_dir='nwp_data',
+#                               member=0, extent=nyc_extent, extent_name='nyc')
+
+ens_archive = EnsHerbie(members, DATES=runs, model='gefs', product='atmos.25',
+                        fxx=fxx, save_dir='nwp_data', extent=nyc_extent,
+                        extent_name='nyc')
+
+search_string = '|'.join(rasp_params['search'][rasp_params['product'] == 'atmos.25'])
+# sl_archive.download(search_string)
+
+ens_archive.download(search_string)
+
+# will need to loop through each product
 for f in archive.objects:
     print('getting', f.__repr__())
     download_extent_only(f, search_string, nyc_extent, name='nyc')
+
+for f in sl_archive.objects:
+    print('getting', f.__repr__())
+    print(f.extent)
+    f.download(search_string)
 
 # would be nice if we could get a progress bar here
 
