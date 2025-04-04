@@ -6,6 +6,7 @@ spack or conda. (I recommend spack.)
 
 import os, tempfile, logging
 from herbie import Herbie, FastHerbie, wgrib2
+from herbie import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 log = logging.getLogger(__name__)
@@ -45,6 +46,12 @@ class RegionHerbie(Herbie):
             orig_save_dir = self.save_dir
             self.download_full = True # needed to get the correct path
             try:
+                tmp_subdir = (
+                    Path(tmp_dir)
+                    / self.model
+                    / f"{self.date:%Y%m%d}"
+                )
+                tmp_subdir.mkdir(parents=True, exist_ok=True)
                 full_file = super().download(search=search, save_dir=tmp_dir,
                                              overwrite=overwrite,
                                              verbose=verbose, *args, **kwargs)
@@ -60,10 +67,80 @@ class RegionHerbie(Herbie):
             os.rename(str(subset_file) + '.idx', str(outFile) + '.idx')
         return outFile
 
+    # this is the original function, but with the search hash changed
+    def _get_localFilePath(self, search = None, *, searchString=None) -> Path:
+        """Get full path to the local file."""
+        # TODO: Remove this check for searString eventually
+        if searchString is not None:
+            warnings.warn(
+                "The argument `searchString` was renamed `search`. Please update your scripts.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            search = searchString
+
+        # Predict the localFileName from the first model template SOURCE.
+        localFilePath = (
+            self.save_dir / self.model / f"{self.date:%Y%m%d}" / self.get_localFileName
+        )
+
+        # Check if any sources in a model template are "local"
+        # (i.e., a custom template file)
+        if any([i.startswith("local") for i in self.SOURCES.keys()]):
+            localFilePath = next(
+                (
+                    Path(self.SOURCES[i])
+                    for i in self.SOURCES
+                    if i.startswith("local") and Path(self.SOURCES[i]).exists()
+                ),
+                localFilePath,
+            )
+
+        if search is not None:
+            # Reassign the index DataFrame with the requested search
+            # idx_df = self.inventory(search)
+
+            # ======================================
+            # Make a unique filename for the subset
+
+            # Get a list of all GRIB message numbers. We will use this
+            # in the output file name as a unique identifier.
+            # all_grib_msg = "-".join([f"{i:g}" for i in idx_df.index])
+
+            # To prevent "filename too long" error, create a hash to
+            # that represents the file name and subseted variables to
+            # shorten the name.
+
+            # I want the files to still be sorted by date, fxx, and
+            # subset fields, so include three separate hashes to similar
+            # files will be sorted together.
+
+            hash_date = hashlib.blake2b(
+                f"{self.date:%Y%m%d%H%M}".encode(), digest_size=1
+            ).hexdigest()
+
+            hash_fxx = hashlib.blake2b(
+                f"{self.fxx}".encode(), digest_size=1
+            ).hexdigest()
+
+            hash_label = hashlib.blake2b(
+                search.encode(), digest_size=2
+            ).hexdigest()
+
+            # Prepend the filename with the hash label to distinguish it
+            # from the full file. The hash label is a cryptic
+            # representation of the GRIB messages in the subset.
+            localFilePath = (
+                localFilePath.parent
+                / f"subset_{hash_date}{hash_fxx}{hash_label}__{localFilePath.name}"
+            )
+
+        return localFilePath
+
     def get_localFilePath(self, search=None):
         if self.download_full or self.extent is None:
             return super().get_localFilePath(search=search)
-        path0 = super().get_localFilePath(search=search)
+        path0 = self._get_localFilePath(search=search)
         new_name = self.extent_name + '_' + path0.name
         return path0.with_name(new_name)
 
