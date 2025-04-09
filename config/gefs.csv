@@ -1,0 +1,19 @@
+shortName,typeOfFirstFixedSurface,level,product,search,typeOfLevel
+TMP,Specified Height Level Above Ground,2,atmos.25,:TMP:2 m above ground:,heightAboveGround
+CAPE,,18000,atmos.25,:CAPE:180-0 mb above ground:,pressureFromGroundLayer
+PRES,Ground or Water Surface,,atmos.25,:PRES:surface:,surface
+TCDC,Entire Atmosphere,475,atmos.5b,:TCDC:,isobaricInhPa
+SHTFL,,,,,
+LHTFL,,,,,
+UGRD,Specified Height Level Above Ground,10,atmos.25,:UGRD:10 m above ground:,heightAboveGround
+VGRD,Specified Height Level Above Ground,10,atmos.25,:VGRD:10 m above ground:,heightAboveGround
+DPT,Specified Height Level Above Ground,2,atmos.25,:DPT:2 m above ground:,heightAboveGround
+DSWRF,Ground or Water Surface,,,,surface
+DLWRF,Ground or Water Surface,,,,surface
+SOILW,Depth Below Land Surface,0,atmos.25,:SOILW:0-0.1 m below ground:,depthBelowLandLayer
+UGRD,,500,atmos.5,:UGRD:500 mb:,isobaricInhPa
+VGRD,,500,atmos.5,:VGRD:500 mb:,isobaricInhPa
+UGRD,,850,atmos.5,:UGRD:850 mb:,isobaricInhPa
+VGRD,,850,atmos.5,:VGRD:850 mb:,isobaricInhPa
+HGT,,500,atmos.5,:HGT:500 mb:,isobaricInhPa
+SPFH,,850,atmos.5b,:SPFH:850 mb:,isobaricInhPa
