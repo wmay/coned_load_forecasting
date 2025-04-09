@@ -1,19 +1,37 @@
-shortName,typeOfFirstFixedSurface,level,product,search,typeOfLevel
-TMP,Specified Height Level Above Ground,2,atmos.25,:TMP:2 m above ground:,heightAboveGround
-CAPE,,18000,atmos.25,:CAPE:180-0 mb above ground:,pressureFromGroundLayer
-PRES,Ground or Water Surface,,atmos.25,:PRES:surface:,surface
-TCDC,Entire Atmosphere,475,atmos.5b,:TCDC:,isobaricInhPa
-SHTFL,,,,,
-LHTFL,,,,,
-UGRD,Specified Height Level Above Ground,10,atmos.25,:UGRD:10 m above ground:,heightAboveGround
-VGRD,Specified Height Level Above Ground,10,atmos.25,:VGRD:10 m above ground:,heightAboveGround
-DPT,Specified Height Level Above Ground,2,atmos.25,:DPT:2 m above ground:,heightAboveGround
-DSWRF,Ground or Water Surface,,,,surface
-DLWRF,Ground or Water Surface,,,,surface
-SOILW,Depth Below Land Surface,0,atmos.25,:SOILW:0-0.1 m below ground:,depthBelowLandLayer
-UGRD,,500,atmos.5,:UGRD:500 mb:,isobaricInhPa
-VGRD,,500,atmos.5,:VGRD:500 mb:,isobaricInhPa
-UGRD,,850,atmos.5,:UGRD:850 mb:,isobaricInhPa
-VGRD,,850,atmos.5,:VGRD:850 mb:,isobaricInhPa
-HGT,,500,atmos.5,:HGT:500 mb:,isobaricInhPa
-SPFH,,850,atmos.5b,:SPFH:850 mb:,isobaricInhPa
+fileType,shortName,typeOfFirstFixedSurface,level,product,search,typeOfLevel
+forecast,TMP,Specified Height Level Above Ground,2,atmos.25,:TMP:2 m above ground:,heightAboveGround
+forecast,CAPE,,18000,atmos.25,:CAPE:180-0 mb above ground:,pressureFromGroundLayer
+forecast,PRES,Ground or Water Surface,,atmos.25,:PRES:surface:,surface
+forecast,TCDC,Entire Atmosphere,475,atmos.25,:TCDC:,isobaricInhPa
+forecast,SHTFL,,,atmos.25,:SHTFL:surface:,surface
+forecast,LHTFL,,,atmos.25,:LHTFL:surface:,surface
+forecast,UGRD,Specified Height Level Above Ground,10,atmos.25,:UGRD:10 m above ground:,heightAboveGround
+forecast,VGRD,Specified Height Level Above Ground,10,atmos.25,:VGRD:10 m above ground:,heightAboveGround
+forecast,DPT,Specified Height Level Above Ground,2,atmos.25,:DPT:2 m above ground:,heightAboveGround
+forecast,DSWRF,Ground or Water Surface,,atmos.25,:DSWRF:surface:,surface
+forecast,DLWRF,Ground or Water Surface,,atmos.25,:DLWRF:surface:,surface
+forecast,SOILW,Depth Below Land Surface,0,atmos.25,:SOILW:0-0.1 m below ground:,depthBelowLandLayer
+forecast,UGRD,,500,atmos.5,:UGRD:500 mb:,isobaricInhPa
+forecast,VGRD,,500,atmos.5,:VGRD:500 mb:,isobaricInhPa
+forecast,UGRD,,850,atmos.5,:UGRD:850 mb:,isobaricInhPa
+forecast,VGRD,,850,atmos.5,:VGRD:850 mb:,isobaricInhPa
+forecast,HGT,,500,atmos.5,:HGT:500 mb:,isobaricInhPa
+forecast,SPFH,,850,atmos.5b,:SPFH:850 mb:,isobaricInhPa
+analysis,TMP,Specified Height Level Above Ground,2,atmos.25,:TMP:2 m above ground:,heightAboveGround
+analysis,CAPE,,18000,atmos.25,:CAPE:180-0 mb above ground:,pressureFromGroundLayer
+analysis,PRES,Ground or Water Surface,,atmos.25,:PRES:surface:,surface
+analysis,TCDC,Entire Atmosphere,475,atmos.5b,:TCDC:,isobaricInhPa
+analysis,SHTFL,,,,,
+analysis,LHTFL,,,,,
+analysis,UGRD,Specified Height Level Above Ground,10,atmos.25,:UGRD:10 m above ground:,heightAboveGround
+analysis,VGRD,Specified Height Level Above Ground,10,atmos.25,:VGRD:10 m above ground:,heightAboveGround
+analysis,DPT,Specified Height Level Above Ground,2,atmos.25,:DPT:2 m above ground:,heightAboveGround
+analysis,DSWRF,Ground or Water Surface,,,,surface
+analysis,DLWRF,Ground or Water Surface,,,,surface
+analysis,SOILW,Depth Below Land Surface,0,atmos.25,:SOILW:0-0.1 m below ground:,depthBelowLandLayer
+analysis,UGRD,,500,atmos.5,:UGRD:500 mb:,isobaricInhPa
+analysis,VGRD,,500,atmos.5,:VGRD:500 mb:,isobaricInhPa
+analysis,UGRD,,850,atmos.5,:UGRD:850 mb:,isobaricInhPa
+analysis,VGRD,,850,atmos.5,:VGRD:850 mb:,isobaricInhPa
+analysis,HGT,,500,atmos.5,:HGT:500 mb:,isobaricInhPa
+analysis,SPFH,,850,atmos.5b,:SPFH:850 mb:,isobaricInhPa

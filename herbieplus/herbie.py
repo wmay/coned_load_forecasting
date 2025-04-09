@@ -4,7 +4,7 @@ This module relies on the wgrib2 system package, which can be installed with
 spack or conda. (I recommend spack.)
 '''
 
-import os, tempfile, logging
+import os, tempfile, hashlib, logging
 from herbie import Herbie, FastHerbie, wgrib2
 from herbie import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed

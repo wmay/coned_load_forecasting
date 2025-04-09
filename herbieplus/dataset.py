@@ -32,12 +32,26 @@ class HerbieCollection:
             if not n_date_missing:
                 continue
             print(f'- Downloading {n_date_missing} files for {date}')
-            for fxx in self.fxx:
-                n_fxx_missing = self.count_fxx_missing(date, fxx)
-                if not n_fxx_missing:
-                    continue
-                print(f'Downloading {n_fxx_missing} files for step {fxx}')
-                self.download_members(date, fxx, threads=threads)
+            if len(self.members) == 1:
+                self.download_fxx(date, threads=threads)
+            else:
+                for fxx in self.fxx:
+                    n_fxx_missing = self.count_fxx_missing(date, fxx)
+                    if not n_fxx_missing:
+                        continue
+                    print(f'Downloading {n_fxx_missing} files for step {fxx}')
+                    self.download_members(date, fxx, threads=threads)
+
+    def download_fxx(self, date, threads=2):
+        '''Download the missing files for a given date.'''
+        outFiles = []
+        m = self.members[0]
+        with ThreadPoolExecutor(threads) as exe:
+            futures = [
+                exe.submit(self.download_single, date, fh, m)
+                for fh in self.fxx
+                if not self.files_exist(date, fh, m)
+            ]
 
     def download_members(self, date, fxx, threads=2):
         '''Download the missing members for a given date and forecast step.'''
@@ -83,7 +97,8 @@ class HerbieCollection:
         # This should ideally use the model template to create paths, but for
         # now just use string interpolation. Example:
         # 'nwp_data/gefs/20230101/nyc_subset_18efda92__gec00.t00z.pgrb2a.0p50.f000'
-        gefs_member_txt = 'gec00' if member == 0 else f'gep{member:02d}'
+        # gefs_member_txt = 'gec00' if member == 0 else f'gep{member:02d}'
+        gefs_member_txt = 'geavg'
         product_txt = {'atmos.5': 'pgrb2a.0p50',
                        'atmos.5b': 'pgrb2b.0p50',
                        'atmos.25': 'pgrb2s.0p25'}[self.product]

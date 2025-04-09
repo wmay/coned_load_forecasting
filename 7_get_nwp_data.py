@@ -9,8 +9,6 @@ spack or conda. (I recommend spack.)
 import numpy as np
 import pandas as pd
 import xarray as xr
-#from herbie import Herbie, FastHerbie, wgrib2
-# from herbieplus.herbie import RegionHerbie, FastRegionHerbie, EnsHerbie
 from herbieplus.dataset import HerbieCollection
 from herbieplus.xarray import open_herbie_dataset
 #from rechunker import rechunk
@@ -24,13 +22,8 @@ from herbieplus.xarray import open_herbie_dataset
 # another complication for GEFS is that there are both .5 and .25 degree
 # products
 
-# # parameters from Rasp and Lerch 2018
-# rasp_params = pd.read_csv('nwp_code/config/gefs_rasp.csv')
-
-# # define the spatial extent for subsetting
-# nyc_extent = (285.5, 286.5, 40, 41.5)
-
-#archive = Herbie("2023-01-01", model='gefs', save_dir='data/herbie', member=0)
+# archive = Herbie("2023-01-01", model='gefs', product='atmos.25',
+#                  save_dir='data/herbie', fxx=3, member='avg')
 
 # archive.PRODUCTS:
 # {'atmos.5': 'Half degree atmos PRIMARY fields (pgrb2ap5); ~83 most common variables.',
@@ -44,54 +37,20 @@ from herbieplus.xarray import open_herbie_dataset
 # inv1 = archive.inventory()
 # inv3.sort_values(by=['variable']).iloc[:, 6:]
 # with pd.option_context('display.max_rows', None):
-#         print(inv3.sort_values(by=['variable']).iloc[:, 6:])
+#         print(inv1.sort_values(by=['variable']).iloc[:, 6:])
 # inv4.loc[inv4['variable'] == 'SHTFL', :].iloc[:, 6:]
 
-# # grab example files to get info about the parameters
-# import cfgrib
-# archive = Herbie("2023-01-01", model='gefs', product='atmos.25',
-#                  save_dir='data/herbie', member=0)
-# search_string = '|'.join(rasp_params['search'][rasp_params['product'] == 'atmos.25'])
-# archive.download(search_string)
-# inv1 = archive.inventory(search_string)
-# with pd.option_context('display.max_rows', None):
-#         print(inv1.sort_values(by=['variable']).iloc[:, 6:])
-
-# # try FastHerbie
-# runs = pd.date_range(start="2022-03-01 12:00", periods=2, freq='D')
-# fxx = range(0, 12, 3)
-# members = range(0, 3)
-
-# sl_archive = FastRegionHerbie(members, DATES=runs, model='gefs',
-#                               product='atmos.25', fxx=fxx, save_dir='data/herbie',
-#                               member=0, extent=nyc_extent, extent_name='nyc')
-
-# ens_archive = EnsHerbie(members, DATES=runs, model='gefs', product='atmos.25',
-#                         fxx=fxx, save_dir='data/herbie', extent=nyc_extent,
-#                         extent_name='nyc')
-
-# search_string = '|'.join(rasp_params['search'][rasp_params['product'] == 'atmos.25'])
-# ens_archive.download(search_string)
-
-# due to the way Herbie frontloads all the index downloading, it's not a good
-# idea to organize all the files in a single Herbie object
+# parameters from Rasp and Lerch 2018
+rasp_params = pd.read_csv('config/gefs.csv')
+rasp_params = rasp_params.loc[rasp_params['fileType'] == 'forecast', :]
+# define the spatial extent for subsetting
+nyc_extent = (285.5, 286.5, 40, 41.5)
+# fxx = range(0, 24 * 8, 3)
+# members = range(0, 31)
+fxx = range(3, 24 * 8, 3)
+members = ['avg']
 
 # would be nice if we could get a progress bar here
-
-# another step to add-- a function to check if the files are already downloaded,
-# since Herbie can't do that without downloading unnecessary things (weird but
-# true). Then use Herbie to get any missing files
-
-
-
-
-
-rasp_params = pd.read_csv('nwp_code/config/gefs_rasp.csv')
-nyc_extent = (285.5, 286.5, 40, 41.5)
-#runs = pd.date_range(start="2021-04-01 12:00", periods=183, freq='D')
-fxx = range(0, 24 * 8, 3)
-members = range(0, 31)
-
 for y in range(2021, 2025):
     print(f'--- Starting year {y}')
     y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
@@ -104,20 +63,6 @@ for y in range(2021, 2025):
                                       extent=nyc_extent, extent_name='nyc')
         print(f'-- search hash {downloader.search_hash}')
         downloader.download(threads=5)
-
-
-
-# atmos5_params = rasp_params.loc[rasp_params['product'] == 'atmos.5', :]
-# atmos5_search = '|'.join(atmos5_params['search'])
-
-
-# downloader = HerbieCollection(runs, 'gefs', 'atmos.5', atmos5_search, fxx,
-#                               members=members, save_dir='data/herbie',
-#                               extent=nyc_extent, extent_name='nyc')
-
-# downloader.search_hash
-
-# downloader.download()
 
 
 # second step: modify as needed
