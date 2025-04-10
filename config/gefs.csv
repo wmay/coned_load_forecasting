@@ -2,7 +2,7 @@ fileType,shortName,typeOfFirstFixedSurface,level,product,search,typeOfLevel
 forecast,TMP,Specified Height Level Above Ground,2,atmos.25,:TMP:2 m above ground:,heightAboveGround
 forecast,CAPE,,18000,atmos.25,:CAPE:180-0 mb above ground:,pressureFromGroundLayer
 forecast,PRES,Ground or Water Surface,,atmos.25,:PRES:surface:,surface
-forecast,TCDC,Entire Atmosphere,475,atmos.25,:TCDC:,isobaricInhPa
+forecast,TCDC,Entire Atmosphere,,atmos.25,:TCDC:,atmosphere
 forecast,SHTFL,,,atmos.25,:SHTFL:surface:,surface
 forecast,LHTFL,,,atmos.25,:LHTFL:surface:,surface
 forecast,UGRD,Specified Height Level Above Ground,10,atmos.25,:UGRD:10 m above ground:,heightAboveGround

@@ -1,7 +1,15 @@
 '''Open a collection of Herbie files with xarray.
 '''
 
+import glob
+import numpy as np
+import pandas as pd
+import xarray as xr
+
 # Possible extension: add support for grib2io
+
+class IncompleteDataException(Exception):
+    pass
 
 def get_nwp_paths(dir, product, members):
     '''Get the paths to the NWP files for a given date and product.
@@ -9,7 +17,7 @@ def get_nwp_paths(dir, product, members):
     out = []
     for m in members:
         m = str(m).zfill(2)
-        m_glob = f'{dir}/subset_*__ge*{m}.t00z.{product}.*.f*'
+        m_glob = f'{dir}/*subset_*__ge*{m}.t12z.{product}.*.f*'
         m_files = glob.glob(m_glob)
         m_files = [ f for f in m_files if f[-4:] != '.idx' ]
         # sort the files by forecast hour
@@ -20,7 +28,11 @@ def get_nwp_paths(dir, product, members):
 def append_level_to_varname(ds, v):
     '''Add the vertical coordinate to a variable name.
     '''
-    z_coord = list(ds.coords.keys())[3]
+    z_coord_idx = 3 if 'number' in ds.coords.keys() else 2
+    z_coord = list(ds.coords.keys())[z_coord_idx]
+    if len(ds[z_coord].values.shape):
+        print(ds)
+        raise Exception(f'Unexpected coordinates for {z_coord}: {ds[z_coord].values}')
     z_value = float(ds[z_coord].values)
     z_units = ds[z_coord].attrs['units']
     return ds.rename({v: f'{v}_{z_value:g}{z_units}'})
@@ -47,7 +59,11 @@ def remove_z_coordinate(ds):
     instead.
     '''
     # cfgrib stores the vertical coordinate as the fourth value
-    z_coord = list(ds.coords.keys())[3]
+    z_coord_idx = 3 if 'number' in ds.coords.keys() else 2
+    z_coord = list(ds.coords.keys())[z_coord_idx]
+    if len(ds[z_coord].values.shape):
+        print(ds)
+        raise Exception(f'Unexpected coordinates for {z_coord}: {ds[z_coord].values}')
     z_value = float(ds[z_coord].values)
     vars = list(ds.data_vars)
     for v in vars:
@@ -74,10 +90,25 @@ def get_nwp_product_vars(var_df, dir, product, members):
         if not pd.isnull(row.level):
             filters['level'] = row.level
         backend_kwargs = {'filter_by_keys': filters}
-        nwp_m = xr.open_mfdataset(nwp_files, concat_dim=['number', 'step'],
-                                  engine='cfgrib', decode_timedelta=True,
-                                  combine='nested',
-                                  backend_kwargs=backend_kwargs)
+        try:
+            nwp_m = xr.open_mfdataset(nwp_files, concat_dim=['number', 'step'],
+                                      engine='cfgrib', decode_timedelta=True,
+                                      combine='nested',
+                                      backend_kwargs=backend_kwargs)
+        except:
+            # see which dataset is missing the time coordinate
+            for f_list in nwp_files:
+                for f in f_list:
+                    ds_f = xr.open_dataset(f, engine='cfgrib',
+                                           decode_timedelta=True,
+                                           backend_kwargs=backend_kwargs)
+                    if 'time' not in ds_f.coords.keys():
+                        print(ds_f)
+                        message = f'{f}: {product}, {row.typeOfLevel}, {row.level}'
+                        raise IncompleteDataException(message)
+        if not len(nwp_m.coords.keys()):
+            print(nwp_files)
+            raise Exception(f'Missing data for {product}, {row.typeOfLevel}, {row.level}')
         nwp_ds.append(nwp_m)
     return nwp_ds
 
@@ -85,12 +116,12 @@ def open_herbie_dataset(var_df, dir, members):
     '''Open a collection of Herbie files with xarray. All variables should have
     the same horizontal coordinates.
     '''
-    var_df = var_df.loc[~pd.isnull(var_df['product']), :]
+    #var_df = var_df.loc[~pd.isnull(var_df['product']), :]
     nwp_ds = []
     for product, product_vars in var_df.groupby('product'):
         product_txt = {'atmos.5': 'pgrb2a', 'atmos.25': 'pgrb2s', 'atmos.5b':
                        'pgrb2b'}[product]
-        product_vars = get_nwp_product_vars(product_vars, dir, product_txt,
-                                            members)
-        nwp_ds.extend(product_vars)
+        product_ds_list = get_nwp_product_vars(product_vars, dir, product_txt,
+                                               members)
+        nwp_ds.extend(product_ds_list)
     return merge_nwp_variables(nwp_ds)
