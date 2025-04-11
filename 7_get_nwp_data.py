@@ -11,7 +11,7 @@ import pandas as pd
 import xarray as xr
 from herbieplus.dataset import HerbieCollection
 from herbieplus.xarray import open_herbie_dataset
-#from rechunker import rechunk
+from rechunker import rechunk
 
 # first step: download files with Herbie, subset with wgrib2, organize
 
@@ -91,10 +91,10 @@ for y in range(2021, 2025):
 
 # have to get the 0.5 and 0.25 resolution variables separately
 params_0p5 = rasp_params.loc[np.isin(rasp_params['product'], ['atmos.5', 'atmos.5b']), :]
-gefs_0p5 = open_herbie_dataset(params_0p5, 'data/herbie/gefs/202104*', ['avg'])
+gefs_0p5 = open_herbie_dataset(params_0p5, 'data/herbie/gefs', ['avg'])
 
 params_0p25 = rasp_params.loc[rasp_params['product'] == 'atmos.25', :]
-gefs_0p25 = open_herbie_dataset(params_0p25, 'data/herbie/gefs/20210401', ['avg'])
+gefs_0p25 = open_herbie_dataset(params_0p25, 'data/herbie/gefs', ['avg'])
 
 # import cfgrib
 
@@ -104,3 +104,11 @@ gefs_0p25 = open_herbie_dataset(params_0p25, 'data/herbie/gefs/20210401', ['avg'
 
 
 # third step: combine with rechunker
+
+gefs_0p5_rechunker = rechunk(
+    gefs_0p5,
+    {'step': 16, 'number': 1, "time": 20, "latitude": 4, "longitude": 3},
+    "1GB",
+    "group_complex_rechunked.zarr"
+)
+gefs_0p5_rechunker.execute()

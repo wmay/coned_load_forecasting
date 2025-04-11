@@ -14,15 +14,19 @@ class IncompleteDataException(Exception):
 def get_nwp_paths(dir, product, members):
     '''Get the paths to the NWP files for a given date and product.
     '''
+    subdirs = glob.glob(f'{dir}/*')
     out = []
-    for m in members:
-        m = str(m).zfill(2)
-        m_glob = f'{dir}/*subset_*__ge*{m}.t12z.{product}.*.f*'
-        m_files = glob.glob(m_glob)
-        m_files = [ f for f in m_files if f[-4:] != '.idx' ]
-        # sort the files by forecast hour
-        m_files.sort(key=lambda x: int(x[-3:]))
-        out.append(m_files)
+    for d in subdirs:
+        d_out = []
+        for m in members:
+            m = str(m).zfill(2)
+            m_glob = f'{d}/*subset_*__ge*{m}.t12z.{product}.*.f*'
+            m_files = glob.glob(m_glob)
+            m_files = [ f for f in m_files if f[-4:] != '.idx' ]
+            # sort the files by forecast hour
+            m_files.sort(key=lambda x: int(x[-3:]))
+            d_out.append(m_files)
+        out.append(d_out)
     return out
 
 def append_level_to_varname(ds, v):
@@ -91,9 +95,10 @@ def get_nwp_product_vars(var_df, dir, product, members):
             filters['level'] = row.level
         backend_kwargs = {'filter_by_keys': filters}
         try:
-            nwp_m = xr.open_mfdataset(nwp_files, concat_dim=['number', 'step'],
-                                      engine='cfgrib', decode_timedelta=True,
-                                      combine='nested',
+            nwp_m = xr.open_mfdataset(nwp_files,
+                                      concat_dim=['time', 'number', 'step'],
+                                      engine='cfgrib',
+                                      decode_timedelta=True, combine='nested',
                                       backend_kwargs=backend_kwargs)
         except:
             # see which dataset is missing the time coordinate
