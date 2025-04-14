@@ -56,7 +56,7 @@ plot(st_geometry(rbind(close_ny, close_nj)), pch = 19, add = T)
 local_asos_stations = paste0('K', c(close_ny$id, close_nj$id))
 
 download_asos_data = function(id) {
-  for (year in 2021:2023) {
+  for (year in 2021:2024) {
     out = file.path('data/asos', paste0(year, '_', id, '.csv'))
     # no need to re-download
     if (file.exists(out)) next()
