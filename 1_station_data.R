@@ -60,10 +60,10 @@ download_asos_data = function(id) {
     out = file.path('data/asos', paste0(year, '_', id, '.csv'))
     # no need to re-download
     if (file.exists(out)) next()
-    # need to start at April 29th, because TV includes a 2-day lag
-    start_str = paste0(year, '-04-29')
+    # start at April to get a head start on the load curve estimates
+    start_str = paste0(year, '-04-01')
     end_str = paste0(year, '-10-01')
-    obs = riem_measures(id, start_str, end_str)
+    obs = riem_measures(id, start_str, date_end = end_str)
     write.csv(obs, file = out, row.names = F)
   }
 }
