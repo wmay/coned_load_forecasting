@@ -6,7 +6,7 @@
 library(magrittr)
 library(timeDate) # holidays
 library(mgcv)
-library(mgcViz)
+# library(mgcViz)
 source('R/load_data.R')
 source('R/coned_tv.R')
 
@@ -46,7 +46,7 @@ peaks = loads %>%
   aggregate(reading ~ day, ., max)
 
 load_curve_dat = merge(peaks, system_tv) %>%
-  subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2023))) %>%
+  subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024))) %>%
   transform(nday = as.integer(day), doy = as.POSIXlt(day)$yday)
 
 
@@ -65,8 +65,14 @@ load_curve_dat %>%
 
 get_fit_as_of = function(cutoff) {
   dat = subset(load_curve_dat, day < cutoff)
+  # use a simpler model for the first year
+  if (cutoff < as.Date('2022-01-01')) {
+    model = reading ~ s(tv) + s(nday)
+  } else {
+    model = reading ~ s(tv) + s(nday) + s(tv, nday)
+  }
   # this sometimes fails due to a singular matrix
-  fit = try(gamm(reading ~ s(tv) + s(nday) + s(tv, nday), data = dat))
+  fit = try(gamm(model, data = dat))
   if (inherits(fit, 'try-error')) {
     # try a simpler model
     fit = gamm(reading ~ s(tv) + s(tv, nday), data = dat)
@@ -74,21 +80,17 @@ get_fit_as_of = function(cutoff) {
   fit
 }
 
-data_start = as.Date('2021-04-01')
-
-f1_day = data_start + 90
+first_fit = as.Date('2021-05-01')
 
 year_forecast_dates = function(year) {
   seq(as.Date(paste0(year, '-04-01')), as.Date(paste0(year, '-10-01')),
       by = 'day')
 }
 
-forecast_days = lapply(2021:2023, year_forecast_dates) %>%
+forecast_days = lapply(2021:2024, year_forecast_dates) %>%
   unlist %>%
   as.Date %>%
-  subset(. > data_start + 90)
-#forecast_days = load_curve_dat$day[load_curve_dat$day > data_start + 90]
-forecast_tvs = seq(50, 86, 2)
+  subset(. >= first_fit & . <= max(load_curve_dat$day) + 1)
 forecast_tvs = seq(50, 86)
 
 forecast_ses = sapply(forecast_days, function(x) {
@@ -109,12 +111,15 @@ forecast_ses2 = as.data.frame(forecast_ses) %>%
   reshape(direction = 'long', varying = 1:(ncol(.) - 1), idvar = 'tv',
           timevar = 'day', v.names = 'se') %>%
   transform(day = forecast_days[day]) %>%
-  transform(toy = as.Date('2023-01-01') + as.POSIXlt(day)$yday,
-            year = as.POSIXlt(day)$year + 1900)
+  transform(doy = as.POSIXlt(day)$yday,
+            year = as.POSIXlt(day)$year + 1900) %>%
+  # adjust day of year for leap years
+  transform(toy = as.Date('2023-01-01') + doy - ifelse(year %% 4, 0, 1))
 
 load_curve_dat %>%
-  transform(toy = as.Date('2023-01-01') + doy,
-            year = as.POSIXlt(day)$year + 1900) %>%
+  transform(year = as.POSIXlt(day)$year + 1900) %>%
+  # adjust day of year for leap years
+  transform(toy = as.Date('2023-01-01') + doy - ifelse(year %% 4, 0, 1)) %>%
   ggplot(aes(x = toy, y = tv)) +
   # overlay heatmap from se matrix
   geom_tile(aes(x = toy, y = tv, fill = se), data = forecast_ses2) +
