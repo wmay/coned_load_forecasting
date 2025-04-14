@@ -11,10 +11,14 @@ import xarray as xr
 class IncompleteDataException(Exception):
     pass
 
-def get_nwp_paths(dir, product, members):
+def get_nwp_paths(model_dir, product, members, runs=None):
     '''Get the paths to the NWP files for a given date and product.
     '''
-    subdirs = glob.glob(f'{dir}/*')
+    if runs is None:
+        subdirs = glob.glob(f'{model_dir}/*')
+    else:
+        subdirs = [ f'{model_dir}/{d:%Y%m%d}' for d in runs ]
+        subdirs.sort()
     out = []
     for d in subdirs:
         d_out = []
@@ -82,10 +86,10 @@ def merge_nwp_variables(ds_list):
     out_list = [ remove_z_coordinate(ds) for ds in out_list ]
     return xr.merge(out_list)
 
-def get_nwp_product_vars(var_df, dir, product, members):
+def get_nwp_product_vars(var_df, dir, product, members, runs=None):
     '''Get a list of variables for a given NWP product.
     '''
-    nwp_files = get_nwp_paths(dir, product, members)
+    nwp_files = get_nwp_paths(dir, product, members, runs=runs)
     nwp_ds = []
     for row in var_df.drop_duplicates(['typeOfLevel', 'level']).itertuples():
         if pd.isnull(row.typeOfLevel):
@@ -93,7 +97,7 @@ def get_nwp_product_vars(var_df, dir, product, members):
         filters = {'typeOfLevel': row.typeOfLevel}
         if not pd.isnull(row.level):
             filters['level'] = row.level
-        backend_kwargs = {'filter_by_keys': filters}
+        backend_kwargs = {'filter_by_keys': filters, 'indexpath': ''}
         try:
             nwp_m = xr.open_mfdataset(nwp_files,
                                       concat_dim=['time', 'number', 'step'],
@@ -103,21 +107,22 @@ def get_nwp_product_vars(var_df, dir, product, members):
         except:
             # see which dataset is missing the time coordinate
             for f_list in nwp_files:
-                for f in f_list:
-                    ds_f = xr.open_dataset(f, engine='cfgrib',
-                                           decode_timedelta=True,
-                                           backend_kwargs=backend_kwargs)
-                    if 'time' not in ds_f.coords.keys():
-                        print(ds_f)
-                        message = f'{f}: {product}, {row.typeOfLevel}, {row.level}'
-                        raise IncompleteDataException(message)
+                for f_list_inner in f_list:
+                    for f in f_list_inner:
+                        ds_f = xr.open_dataset(f, engine='cfgrib',
+                                               decode_timedelta=True,
+                                               backend_kwargs=backend_kwargs)
+                        if 'time' not in ds_f.coords.keys():
+                            print(ds_f)
+                            message = f'{f}: {product}, {row.typeOfLevel}, {row.level}'
+                            raise IncompleteDataException(message)
         if not len(nwp_m.coords.keys()):
             print(nwp_files)
             raise Exception(f'Missing data for {product}, {row.typeOfLevel}, {row.level}')
         nwp_ds.append(nwp_m)
     return nwp_ds
 
-def open_herbie_dataset(var_df, dir, members):
+def open_herbie_dataset(var_df, dir, members, runs=None):
     '''Open a collection of Herbie files with xarray. All variables should have
     the same horizontal coordinates.
     '''
@@ -127,6 +132,6 @@ def open_herbie_dataset(var_df, dir, members):
         product_txt = {'atmos.5': 'pgrb2a', 'atmos.25': 'pgrb2s', 'atmos.5b':
                        'pgrb2b'}[product]
         product_ds_list = get_nwp_product_vars(product_vars, dir, product_txt,
-                                               members)
+                                               members, runs=runs)
         nwp_ds.extend(product_ds_list)
     return merge_nwp_variables(nwp_ds)

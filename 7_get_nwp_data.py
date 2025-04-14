@@ -5,13 +5,13 @@ spack or conda. (I recommend spack.)
 '''
 
 # pip install 'herbie-data[extras]'
-#import os, glob
+import glob
 import numpy as np
 import pandas as pd
 import xarray as xr
 from herbieplus.dataset import HerbieCollection
 from herbieplus.xarray import open_herbie_dataset
-from rechunker import rechunk
+# from rechunker import rechunk
 
 # first step: download files with Herbie, subset with wgrib2, organize
 
@@ -68,33 +68,74 @@ for y in range(2021, 2025):
 
 # can use this to remove troublesome incomplete files
 # import os, glob
+# from herbieplus.xarray import IncompleteDataException
 # date_dirs = glob.glob('data/herbie/gefs/*')
 # date_dirs.sort()
 # params_atmosp5 = rasp_params.loc[rasp_params['product'] == 'atmos.5', :]
 
-# for d in date_dirs[10:20]:
+# runs = []
+# for y in range(2021, 2025):
+#         y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
+#         runs.extend(list(y_runs))
+
+# for r in runs:
 #     success = False
 #     while not success:
 #         try:
-#             gefs_0p5 = open_herbie_dataset(params_0p5, d, ['avg'])
+#             gefs_0p25 = open_herbie_dataset(params_0p25, 'data/herbie/gefs',
+#                                             ['avg'], runs=[r])
 #             success = True
 #         except IncompleteDataException as e:
-#             inc_file = e.message.split(':')[0]
+#             inc_file = str(e).split(':')[0]
 #             print(f'Removing {inc_file}')
-#             #os.remove(f)
-
+#             os.remove(inc_file)
 
 
 
 
 # second step: modify as needed
 
-# have to get the 0.5 and 0.25 resolution variables separately
+# because there are so many files, it makes more sense to aggregate them into
+# daily files first
+runs = []
+for y in range(2021, 2025):
+    y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
+    runs.extend(list(y_runs))
+
 params_0p5 = rasp_params.loc[np.isin(rasp_params['product'], ['atmos.5', 'atmos.5b']), :]
-gefs_0p5 = open_herbie_dataset(params_0p5, 'data/herbie/gefs', ['avg'])
+for r in runs:
+    print(r)
+    r_ds = open_herbie_dataset(params_0p5, 'data/herbie/gefs', ['avg'],
+                               runs=[r])
+    r_nc = f'results/get_nwp_data/daily_netcdf/gefs_0p5/{r:%Y%m%d}.nc'
+    r_ds.to_netcdf(r_nc)
+    r_ds.close()
+gefs_0p5_files = glob.glob('results/get_nwp_data/daily_netcdf/gefs_0p5/*.nc')
+gefs_0p5_files.sort()
+gefs_0p5 = xr.open_mfdataset(gefs_0p5_files, decode_timedelta=True)
+gefs_0p5.to_netcdf('results/get_nwp_data/gefs_0p5.nc')
+gefs_0p5.close()
 
 params_0p25 = rasp_params.loc[rasp_params['product'] == 'atmos.25', :]
-gefs_0p25 = open_herbie_dataset(params_0p25, 'data/herbie/gefs', ['avg'])
+for r in runs[136:]:
+    print(r)
+    r_ds = open_herbie_dataset(params_0p25, 'data/herbie/gefs', ['avg'],
+                               runs=[r])
+    r_nc = f'results/get_nwp_data/daily_netcdf/gefs_0p25/{r:%Y%m%d}.nc'
+    r_ds.to_netcdf(r_nc)
+    r_ds.close()
+gefs_0p25_files = glob.glob('results/get_nwp_data/daily_netcdf/gefs_0p25/*.nc')
+gefs_0p25_files.sort()
+gefs_0p25 = xr.open_mfdataset(gefs_0p25_files, decode_timedelta=True)
+gefs_0p25.to_netcdf('results/get_nwp_data/gefs_0p25.nc')
+gefs_0p25.close()
+
+# have to get the 0.5 and 0.25 resolution variables separately
+# params_0p5 = rasp_params.loc[np.isin(rasp_params['product'], ['atmos.5', 'atmos.5b']), :]
+# gefs_0p5 = open_herbie_dataset(params_0p5, 'data/herbie/gefs', ['avg'])
+
+# params_0p25 = rasp_params.loc[rasp_params['product'] == 'atmos.25', :]
+# gefs_0p25 = open_herbie_dataset(params_0p25, 'data/herbie/gefs', ['avg'])
 
 # import cfgrib
 
@@ -103,12 +144,13 @@ gefs_0p25 = open_herbie_dataset(params_0p25, 'data/herbie/gefs', ['avg'])
 # x2 = cfgrib.open_datasets('data/herbie/gefs/20210401/nyc_subset_fc86e7eb__geavg.t12z.pgrb2s.0p25.f021')
 
 
-# third step: combine with rechunker
+# third step: combine with rechunker -- not necessary because the data is so
+# small!
 
-gefs_0p5_rechunker = rechunk(
-    gefs_0p5,
-    {'step': 16, 'number': 1, "time": 20, "latitude": 4, "longitude": 3},
-    "1GB",
-    "group_complex_rechunked.zarr"
-)
-gefs_0p5_rechunker.execute()
+# gefs_0p5_rechunker = rechunk(
+#     gefs_0p5,
+#     {'step': 16, "time": 30, "latitude": 4, "longitude": 3},
+#     "1GB",
+#     "results/get_nwp_data/gefs_0p5.zarr"
+# )
+# gefs_0p5_rechunker.execute()
