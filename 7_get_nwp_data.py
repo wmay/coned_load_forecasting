@@ -5,13 +5,24 @@ spack or conda. (I recommend spack.)
 '''
 
 # pip install 'herbie-data[extras]'
+# pip install 'dask[distributed]'
+# pip install graphviz
 import glob
 import numpy as np
 import pandas as pd
 import xarray as xr
-from herbieplus.dataset import HerbieCollection
-from herbieplus.xarray import open_herbie_dataset
+# from herbieplus.dataset import HerbieCollection
+# from herbieplus.xarray import open_herbie_dataset
+# from herbieplus.dataset2 import NwpPath
+from herbieplus.collection import NwpCollection
 # from rechunker import rechunk
+from dask.distributed import Client
+# following https://examples.dask.org/applications/embarrassingly-parallel.html#Start-Dask-Client-for-Dashboard
+
+client = Client()
+# client = Client(threads_per_worker=4, n_workers=1)
+client
+client.dashboard_link
 
 # first step: download files with Herbie, subset with wgrib2, organize
 
@@ -24,6 +35,13 @@ from herbieplus.xarray import open_herbie_dataset
 
 # archive = Herbie("2023-01-01", model='gefs', product='atmos.25',
 #                  save_dir='data/herbie', fxx=3, member='avg')
+
+# gefs_remote = NwpPath("2023-01-01", model='gefs', product='atmos.25',
+#                       save_dir='data/herbie', fxx=3, member='avg')
+
+# gefs_remote.get_remoteFileName # 'geavg.t00z.pgrb2s.0p25.f003'
+# gefs_remote.get_localFileName # 'geavg.t00z.pgrb2s.0p25.f003'
+# gefs_remote.get_localFilePath() # PosixPath('data/herbie/gefs/20230101/geavg.t00z.pgrb2s.0p25.f003')
 
 # archive.PRODUCTS:
 # {'atmos.5': 'Half degree atmos PRIMARY fields (pgrb2ap5); ~83 most common variables.',
@@ -65,6 +83,59 @@ for y in range(2021, 2025):
                                       extent=nyc_extent, extent_name='nyc')
         print(f'-- search hash {downloader.search_hash}')
         downloader.download(threads=5)
+
+
+# testing new NwpCollection
+y_runs = pd.date_range(start=f"{2021}-04-01 12:00", periods=5, freq='D')
+product_params = rasp_params.loc[rasp_params['product'] == 'atmos.5', :]
+product_search = '|'.join(product_params['search'])
+fxx = range(3, 24, 3)
+
+downloader = NwpCollection(y_runs, 'gefs', 'atmos.5', product_search, fxx,
+                           members=members, save_dir='nwp_test',
+                           extent=nyc_extent)
+
+downloader.collection_size()
+
+x = downloader.download()
+
+# # see the graph
+# x[0].visualize()
+# # creates file at mydask.png
+
+# x2 = dask.compute(*x)
+
+
+
+
+# how big is the whole thing?
+
+runs = pd.date_range(start=f"{2021}-04-01 12:00", periods=183, freq='D')
+for y in range(2022, 2025):
+    y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
+    runs = runs.union(y_runs)
+fxx = range(3, 24 * 8, 3)
+members = ['avg']
+
+downloader2 = NwpCollection(y_runs, 'gefs', 'atmos.5', product_search, fxx,
+                            members=members, save_dir='nwp_test',
+                            extent=nyc_extent)
+
+downloader2.collection_size()
+downloader2.file_size
+
+product_params = rasp_params.loc[rasp_params['product'] == 'atmos.25', :]
+product_search = '|'.join(product_params['search'])
+
+downloader3 = NwpCollection(y_runs, 'gefs', 'atmos.25', product_search, fxx,
+                            members=members, save_dir='nwp_test',
+                            extent=nyc_extent)
+
+downloader3.collection_size()
+downloader2.file_size
+
+
+
 
 # can use this to remove troublesome incomplete files
 # import os, glob
