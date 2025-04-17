@@ -23,8 +23,10 @@ def get_nwp_paths(model_dir, product, members, runs=None):
     for d in subdirs:
         d_out = []
         for m in members:
-            m = str(m).zfill(2)
-            m_glob = f'{d}/*subset_*__ge*{m}.t12z.{product}.*.f*'
+            if type(m) == int:
+                m = str(m).zfill(2)
+            # m_glob = f'{d}/*subset_*__ge*{m}.t12z.{product}.*.f*'
+            m_glob = f'{d}/*ge*{m}.t12z.{product}.*.f*'
             m_files = glob.glob(m_glob)
             m_files = [ f for f in m_files if f[-4:] != '.idx' ]
             # sort the files by forecast hour

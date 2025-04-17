@@ -28,13 +28,14 @@ class NwpCollection:
         self.save_dir = save_dir
         self.extent = extent
 
-    def download(self, overwrite=False):
-        '''Download all remaining files in the collection.
+    def get_status(self):
+        '''Print the status of the collection.
         '''
         n_files = len(self.DATES) * len(self.fxx) * len(self.members)
         full_download_size = self.file_size * n_files
         print(f'Complete download size (approximate): {naturalsize(full_download_size)}')
-        print('(Size on disk will be smaller due to regional subsetting.)')
+        if self.extent is not None:
+            print('(Size on disk will be smaller due to regional subsetting.)')
         # make a matrix representing the download status of each file. 0 is
         # missing and 1 is downloaded
         download_status = np.zeros((len(self.DATES), len(self.fxx),
@@ -48,11 +49,21 @@ class NwpCollection:
         remaining_download_size = self.file_size * n_remaining
         print(f'{n_files - n_remaining} of {n_files} files downloaded')
         print(f'Remaining download size (approximate): {naturalsize(remaining_download_size)}')
-        if not n_remaining:
+        out = {'n_files': n_files,
+               'n_remaining': n_remaining,
+               'remaining_download_size': remaining_download_size,
+               'download_array': download_status}
+        return out
+
+    def download(self, overwrite=False):
+        '''Download all remaining files in the collection.
+        '''
+        status = self.get_status()
+        if not status['n_remaining']:
             print('Nothing to download.')
             return dask.compute()
-        use_bag = n_remaining > 50000
-        remaining_coords = np.stack(np.where(~download_status)).T
+        use_bag = status['n_remaining'] > 50000
+        remaining_coords = np.stack(np.where(~status['download_array'])).T
         # with tempfile.TemporaryDirectory() as tmp_dir:
         #     print(tmp_dir)
         #     # tasks = [ dask.delayed(self._download_from_coords)(coords, tmp_dir)
@@ -63,7 +74,7 @@ class NwpCollection:
         #     #return dask.compute(*tasks)
         start_time = datetime.now()
         with tempfile.TemporaryDirectory() as tmp_dir:
-            print(tmp_dir)
+            # print(tmp_dir)
             if use_bag:
                 # bag = db.from_sequence(tasks, npartitions=1000)
                 # bag.compute()

@@ -11,51 +11,20 @@ import glob
 import numpy as np
 import pandas as pd
 import xarray as xr
-# from herbieplus.dataset import HerbieCollection
 # from herbieplus.xarray import open_herbie_dataset
-# from herbieplus.dataset2 import NwpPath
 from herbieplus.collection import NwpCollection
 # from rechunker import rechunk
 from dask.distributed import Client
-# following https://examples.dask.org/applications/embarrassingly-parallel.html#Start-Dask-Client-for-Dashboard
 
+# following https://examples.dask.org/applications/embarrassingly-parallel.html#Start-Dask-Client-for-Dashboard
 client = Client()
 # client = Client(threads_per_worker=4, n_workers=1)
 client
 client.dashboard_link
 
-# first step: download files with Herbie, subset with wgrib2, organize
+# first step: download files with herbie, herbieplus
 
-# GEFS test run
-
-# https://herbie.readthedocs.io/en/latest/gallery/noaa_models/gefs.html
-
-# another complication for GEFS is that there are both .5 and .25 degree
-# products
-
-# archive = Herbie("2023-01-01", model='gefs', product='atmos.25',
-#                  save_dir='data/herbie', fxx=3, member='avg')
-
-# gefs_remote = NwpPath("2023-01-01", model='gefs', product='atmos.25',
-#                       save_dir='data/herbie', fxx=3, member='avg')
-
-# gefs_remote.get_remoteFileName # 'geavg.t00z.pgrb2s.0p25.f003'
-# gefs_remote.get_localFileName # 'geavg.t00z.pgrb2s.0p25.f003'
-# gefs_remote.get_localFilePath() # PosixPath('data/herbie/gefs/20230101/geavg.t00z.pgrb2s.0p25.f003')
-
-# archive.PRODUCTS:
-# {'atmos.5': 'Half degree atmos PRIMARY fields (pgrb2ap5); ~83 most common variables.',
-#  'atmos.5b': 'Half degree atmos SECONDARY fields (pgrb2bp5); ~500 least common variables',
-#  'atmos.25': 'Quarter degree atmos PRIMARY fields (pgrb2sp25); ~35 most common variables',
-#  'wave': 'Global wave products.',
-#  'chem.5': 'Chemistry fields on 0.5 degree grid',
-#  'chem.25': 'Chemistry fields on 0.25 degree grid'}
-
-# # figure out the search strings
-# inv1 = archive.inventory()
-# with pd.option_context('display.max_rows', None):
-#         print(inv1.sort_values(by=['variable']).iloc[:, 6:])
-# inv4.loc[inv4['variable'] == 'SHTFL', :].iloc[:, 6:]
+# GEFS
 
 # parameters from Rasp and Lerch 2018
 rasp_params = pd.read_csv('config/gefs.csv')
@@ -65,24 +34,33 @@ rasp_params = rasp_params.loc[rasp_params['fileType'] == 'forecast', :]
 rasp_params = rasp_params.loc[rasp_params['product'] != 'atmos.5b', :]
 # define the spatial extent for subsetting
 nyc_extent = (285.5, 286.5, 40, 41.5)
+# April through Sept., starting 2021
+runs = pd.date_range(start=f"{2021}-04-01 12:00", periods=183, freq='D')
+for y in range(2022, 2025):
+    y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
+    runs = runs.union(y_runs)
+# analysis file contains different variables, so it must be downloaded
+# separately
 # fxx = range(0, 24 * 8, 3)
-# members = range(0, 31)
 fxx = range(3, 24 * 8, 3)
+# members = range(0, 31)
 members = ['avg']
 
-# would be nice if we could get a progress bar here
-for y in range(2021, 2025):
-    print(f'--- Starting year {y}')
-    y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
-    for product in list(rasp_params['product'].unique()):
-        print(f'-- Starting product {product}')
-        product_params = rasp_params.loc[rasp_params['product'] == product, :]
-        product_search = '|'.join(product_params['search'])
-        downloader = HerbieCollection(y_runs, 'gefs', product, product_search, fxx,
-                                      members=members, save_dir='data/herbie',
-                                      extent=nyc_extent, extent_name='nyc')
-        print(f'-- search hash {downloader.search_hash}')
-        downloader.download(threads=5)
+
+
+# # would be nice if we could get a progress bar here
+# for y in range(2021, 2025):
+#     print(f'--- Starting year {y}')
+#     y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
+#     for product in list(rasp_params['product'].unique()):
+#         print(f'-- Starting product {product}')
+#         product_params = rasp_params.loc[rasp_params['product'] == product, :]
+#         product_search = '|'.join(product_params['search'])
+#         downloader = HerbieCollection(y_runs, 'gefs', product, product_search, fxx,
+#                                       members=members, save_dir='data/herbie',
+#                                       extent=nyc_extent, extent_name='nyc')
+#         print(f'-- search hash {downloader.search_hash}')
+#         downloader.download(threads=5)
 
 
 # testing new NwpCollection
@@ -95,15 +73,11 @@ downloader = NwpCollection(y_runs, 'gefs', 'atmos.5', product_search, fxx,
                            members=members, save_dir='nwp_test',
                            extent=nyc_extent)
 
+downloader.get_status()
+
 downloader.collection_size()
 
 x = downloader.download()
-
-# # see the graph
-# x[0].visualize()
-# # creates file at mydask.png
-
-# x2 = dask.compute(*x)
 
 
 
@@ -165,6 +139,22 @@ downloader2.file_size
 
 
 # second step: modify as needed
+
+# try xarray parallel reading
+
+from herbieplus.xarray import get_nwp_paths
+
+nwp_files = get_nwp_paths('nwp_test/gefs', 'pgrb2a', ['avg'], runs=downloader.DATES)
+
+filters = {'typeOfLevel': 'isobaricInhPa', 'level': 500}
+backend_kwargs = {'filter_by_keys': filters, 'indexpath': ''}
+
+nwp_m = xr.open_mfdataset(nwp_files, concat_dim=['time', 'number', 'step'],
+                          engine='cfgrib', decode_timedelta=True,
+                          combine='nested', parallel=True,
+                          backend_kwargs=backend_kwargs)
+
+
 
 # because there are so many files, it makes more sense to aggregate them into
 # daily files first
