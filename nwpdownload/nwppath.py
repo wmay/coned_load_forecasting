@@ -1,9 +1,5 @@
-'''Download a NWP dataset using the Herbie model templates.
+'''Get path info from Herbie.
 '''
-
-# Still need Herbie to download individual files, for the variable subsetting
-
-# Can load files into a virtual RAM filesystemt to avoid disk speed limitations
 
 from datetime import timedelta
 from typing import Optional, Union
@@ -117,6 +113,11 @@ class NwpPath(Herbie):
         # # self.idx is the first existing index file discovered.
         # self.grib, self.grib_source = self.find_grib()
         # self.idx, self.idx_source = self.find_idx()
+        # Just use the first souce (AWS)
+        self.grib_source = list(self.SOURCES.keys())[0]
+        self.grib = self.SOURCES[self.grib_source]
+        self.idx_source = list(self.SOURCES.keys())[0]
+        self.idx = self.grib + '.idx'
 
         # if verbose:
         #     # ANSI colors added for style points

@@ -7,7 +7,7 @@ os.chdir('..')
 import numpy as np
 import pandas as pd
 from herbie import Herbie
-from herbieplus.collection import NwpCollection
+from nwpdownload.collection import NwpCollection
 from dask.distributed import Client
 
 # GEFS
