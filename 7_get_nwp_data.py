@@ -1,30 +1,141 @@
 '''Download and organize NWP forecasts.
-
-This script relies on the wgrib2 system package, which can be installed with
-spack or conda. (I recommend spack.)
 '''
 
-# pip install 'herbie-data[extras]'
-# pip install 'dask[distributed]'
-# pip install graphviz
 import glob
 import numpy as np
 import pandas as pd
 import xarray as xr
-# from herbieplus.xarray import open_herbie_dataset
-from herbieplus.collection import NwpCollection
-# from rechunker import rechunk
+from nwpdownload import NwpCollection
+from nwpdownload.kubernetes import k8s_download_cluster
 from dask.distributed import Client
+# from rechunker import rechunk
 
-# following https://examples.dask.org/applications/embarrassingly-parallel.html#Start-Dask-Client-for-Dashboard
-client = Client()
-# client = Client(threads_per_worker=4, n_workers=1)
-client
-client.dashboard_link
+# In general, the approach here is to get the forecast variables going out to 8
+# days ahead.
 
-# first step: download files with herbie, herbieplus
+# However, because we're predicting based on 3 days of weather, for the shorter
+# forecasts we need a way to fill in the weather that's already happened. It
+# gets complicated, because the analysis files (f00) don't contain all of the
+# predictor variables. So the best we can do is to get all of the 00, 03, and 06
+# files to fill in the missing data with the shortest-term, and presumably most
+# accurate, forecast.
+
+# GEFS adds another twist, because I need individual ensemble members to
+# calculate TV statistics. So for TV variables get the ensemble members, while
+# for the rest get only the means and spreads. And it's also split into
+# different "product" files. They should probably make it even more complicated
+# IMO, otherwise a few people may actually use the data.
+
+# Because there are so many sets of data to collect, I think it's best to
+# collect the details in **kwargs dictionaries, then iterate over them.
+
+# (For now just get the 8 days of forecasts, to get started.)
+
+cluster = k8s_download_cluster('wmay-download',
+                               '/rdma/hulk/coe/Will/nwp_download',
+                               n_workers=100, threads_per_worker=6,
+                               port_forward_cluster_ip=True)
+client = Client(cluster)
+
+# common parameters
+nyc_extent = (285.5, 286.5, 40, 41.5)
+runs_daily_12utc = pd.date_range(start=f"{2021}-04-01 12:00", periods=183, freq='D')
+for y in range(2022, 2025):
+    y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
+    runs_daily_12utc = runs_daily_12utc.union(y_runs)
+
+# For variables, I think the cleanest option would be to list the desired
+# variables, then check an inventory to decide which product to fetch them from.
+# Rather than manually record the product for each variable
+
 
 # GEFS
+
+# Files split into atmos.25, atmos.5a, and atmos.5b. atmos.5b only available as
+# individual ensemble members.
+
+# TV variables (temperature, humidity) must be downloaded as individual ensemble
+# members for calculating TV summary statistics.
+
+# f00 is missing some variables. So to fill in data, get what we can from f00.
+# Get everything from f03. And get what's missing from f00 from f06 to fill that
+# in as well. Phwew! Since we're getting everything for f03 anyway, that should
+# be simple enough. For f06, need to get 12utc and other runs separately,
+# because they won't have the same variables.
+
+# I'll just get 12utc f03, f06 stuff normally. Then have a separate 00/06/18utc
+# set for the historical backfilling. No, this is getting ridiculous. Get 12utc
+# f06+, then f00 and f03 all runs, then only f06 00/08/18. That requires fewest
+# collections.
+
+# Instead of creating separate collections, why not use same search for f00, and
+# what's missing will be excluded automatically?
+
+# So the set of downloads are--
+
+# regular forecasts-- f00+ (12utc, each product, mean+spread -- 3 collections)
+# TV forecasts-- f00+ (12utc, atmos.25, ensemble members -- 1 collection)
+# backfill-- f00, f03 (00/08/18utc, regular forecasts -- 3 collections)
+# backfill-- f00, f03 (00/08/18utc, TV ensemble members -- 1 collection)
+# backfill-- f06 (00/08/18utc, missing f00 mean+spread -- 1? collection)
+
+# need to generate the 3 collections from the list of desired variables
+
+# would be nice to generate the backfill collections as well
+
+gefs_fxx_fct = range(3, 24 * 8, 3) # out to 8 days ahead
+
+gefs_tv_fct = {
+    'model': 'gefs',
+    'product': 'atmos.25',
+    'DATES': runs_daily_12utc,
+    'fxx': gefs_fxx_fct,
+    'members': range(0, 31),
+    'extent': nyc_extent,
+    'search': '|'.join([
+        ':TMP:2 m above ground:',
+        ':DPT:2 m above ground:'
+    ])
+}
+
+gefs_0p25_fct = {
+    'model': 'gefs',
+    'product': 'atmos.25',
+    'DATES': runs_daily_12utc,
+    'fxx': gefs_fxx_fct,
+    'members': ['avg', 'spread'],
+    'extent': nyc_extent,
+    'search': '|'.join([
+        ':TMP:2 m above ground:',
+        ':DPT:2 m above ground:'
+    ])
+}
+
+gefs_0p5a_fct = {
+    'model': 'gefs',
+    'product': 'atmos.25',
+    'DATES': runs_daily_12utc,
+    'fxx': gefs_fxx_fct,
+    'members': ['avg', 'spread'],
+    'extent': nyc_extent,
+    'search': '|'.join([
+        ':TMP:2 m above ground:',
+        ':DPT:2 m above ground:'
+    ])
+}
+
+gefs_0p5b_fct = {
+    'model': 'gefs',
+    'product': 'atmos.25',
+    'DATES': runs_daily_12utc,
+    'fxx': gefs_fxx_fct,
+    'members': range(0, 31),
+    'extent': nyc_extent,
+    'search': '|'.join([
+        ':TMP:2 m above ground:',
+        ':DPT:2 m above ground:'
+    ])
+}
 
 # parameters from Rasp and Lerch 2018
 rasp_params = pd.read_csv('config/gefs.csv')
@@ -45,6 +156,10 @@ for y in range(2022, 2025):
 fxx = range(3, 24 * 8, 3)
 # members = range(0, 31)
 members = ['avg']
+
+downloader = NwpCollection(y_runs, 'gefs', 'atmos.5', product_search, fxx,
+                           members=members, save_dir='nwp_test',
+                           extent=nyc_extent)
 
 
 
