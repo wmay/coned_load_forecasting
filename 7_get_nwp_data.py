@@ -81,6 +81,44 @@ for y in range(2022, 2025):
 
 # need to generate the 3 collections from the list of desired variables
 
+from herbie import Herbie
+
+def find_variable_product(DATES, fxx, model, products, search, member=None):
+    '''Find the product containing the given variable (represented by the search
+    term).
+    '''
+    product_herbie = {}
+    for p in products:
+        product_herbie[p] = Herbie(DATES[0], fxx=fxx[0], model=model, product=p,
+                                   member=member)
+    var_products = {}
+    for s in search:
+        var_products[s] = None
+        for p in products:
+            p_inv = product_herbie[p].inventory(search=s)
+            if p_inv.shape[0]:
+                var_products[s] = p
+                break
+    return var_products
+
+
+gefs_param_products = find_variable_product(runs_daily_12utc, gefs_fxx_fct,
+                                            'gefs',
+                                            ['atmos.25', 'atmos.5', 'atmos.5b'],
+                                            search=rasp_params['search'].unique(),
+                                            member=0)
+
+find_variable_product(runs_daily_12utc, [0],
+                      'gefs',
+                      ['atmos.25', 'atmos.5', 'atmos.5b'],
+                      search=rasp_params['search'].unique(),
+                      member=0)
+# only difference is TCDC
+
+
+def make_collection_args(DATES, fxx, model, products, search, member=None):
+    pass
+
 # would be nice to generate the backfill collections as well
 
 gefs_fxx_fct = range(3, 24 * 8, 3) # out to 8 days ahead
@@ -139,6 +177,10 @@ gefs_0p5b_fct = {
 
 # parameters from Rasp and Lerch 2018
 rasp_params = pd.read_csv('config/gefs.csv')
+rasp_params = rasp_params.loc[~pd.isnull(rasp_params['search']), :]
+
+
+
 rasp_params = rasp_params.loc[~pd.isnull(rasp_params['product']), :]
 rasp_params = rasp_params.loc[rasp_params['fileType'] == 'forecast', :]
 # skip atmos.5b for now because there's no average file
