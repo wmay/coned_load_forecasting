@@ -26,8 +26,7 @@ rolling_mean3 = function(time, val, units = c('hours', 'days'),
 coned_round = function(x, digits = 0) round(x + sqrt(.Machine$double.eps), digits)
 
 # Get wet bulb temperature from temperature (`DB`) and dewpoint (`DP`). Pressure
-# is assumed to be 1013.25. DB and DP have to be provided in Fahrenheit so they
-# can be rounded in Fahrenheit.
+# is assumed to be 1013.25. DB and DP must be in Fahrenheit
 coned_wet_bulb = function(DB, DP) {
   # I'm vaguely curious about where ConEd got this calculation, but not going to
   # look it up for now
@@ -44,10 +43,9 @@ coned_wet_bulb = function(DB, DP) {
 # temperatures (hour ending 9AM – 9PM, so 7-9am to 7-9pm)
 coned_effective_temp = function(t, temp, dwp) {
   data.frame(time = t, temp = temp, dwp = dwp) %>%
-    subset(!(is.na(temp) | is.na(dwp))) %>%
+    subset(!is.na(temp) & !is.na(dwp)) %>%
     transform(wetbulb = coned_wet_bulb(temp, dwp)) %>%
     transform(drywet = (temp + wetbulb) / 2) %>%
-    # transform(drywet = dry_wet_ave(temp, rh, pres)) %>%
     transform(ave_3hr = rolling_mean3(time, drywet, 'hours')) %>%
     # remove night/morning
     transform(hour_of_day = as.integer(format(time, '%H'))) %>%

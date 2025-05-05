@@ -98,7 +98,7 @@ smaller networks that collectively use an enormous amount of power. Peak load
 densities (load per area) vary so widely that we had to adopt a log scale to
 display them.
 
-```{r network-peaks, fig.height=8}
+```{r network-peaks, fig.height=8, message=FALSE}
 network_peaks = readRDS('results/energy_loads/network_peaks.rds')
 p1 = plot_station_data(network_peaks, aes(fill = peak), nyc_base, alpha = .9) +
   scale_fill_viridis_c('Peak load (MW)', option = 'magma') +
@@ -182,7 +182,7 @@ though we'd still like to simplify the process and adopt methods that are more
 narrowly tailored to this problem.
 
 The second issue is that the TV/load relationship changes from year to year,
-raising the question of how to account for this change within the cubicane
+raising the question of how to account for this change within the cubic
 polynomial model. Some options are
 
 1) allow a different constant term for each year
@@ -213,7 +213,7 @@ no benefit over equation 1). We then pool the p-values from all networks using
 Fisher's method [@fisher_statistical_1925]. The resulting overall p-value is
 less than 10^`r#pooled_pval_exp`^. This result demonstrates that at least some
 networks are changing in ways that aren't captured by regression 1), and these
-changes can't be explained as a random noise. Therefore we use regression 3).
+changes can't be explained as random noise. Therefore we use regression 3).
 
 
 # Sea breeze
@@ -471,7 +471,7 @@ network_stations_med = median(lengths(stforw_sites_list)) %>%
 We also plot the network-level selected stations below, where each colored grid
 cell is a selected station. The axes are ordered by the sea breeze dimension to
 show sea breeze-related patterns. The relationship is noisy, but stations that
-are more effected by the sea breeze are more likely to be selected by networks
+are more affected by the sea breeze are more likely to be selected by networks
 affected by the sea breeze, and vice versa. The median number of selected
 stations is `r#network_stations_med`.
 
