@@ -66,6 +66,8 @@ def make_collection_args(DATES, fxx, model, products, search):
     for p in products:
         # which variables are in this product?
         p_vars = [ v for v in search if var_products[v] == p ]
+        if not len(p_vars):
+            continue
         members = None
         if model == 'gefs':
             if p == 'atmos.5b':
@@ -91,7 +93,7 @@ def make_collection_args(DATES, fxx, model, products, search):
 
 # speed this up immensely with the help of a cluster running kubernetes
 cluster = k8s_download_cluster('wmay-download',
-                               '/rdma/hulk/coe/Will/nwp_download',
+                               '/rdma/hulk/coe/Will/coned_nwp',
                                n_workers=100, threads_per_worker=6,
                                port_forward_cluster_ip=True)
 client = Client(cluster)
@@ -124,25 +126,26 @@ nyc_extent = (285.5, 286.5, 40, 41.5)
 
 # So the set of downloads are--
 
-# regular forecasts-- f00+ (12utc, each product, mean -- 3 collections)
-# TV forecasts-- f00+ (12utc, atmos.25, ensemble members -- 1 collection)
-# regular backfill-- f00, f03 (00/08/18utc, regular forecasts -- 3 collections)
-# TV backfill-- f00, f03 (00/08/18utc, TV ensemble members -- 1 collection)
+# regular forecasts-- f03+ (12utc, each product, mean -- 3 collections)
+# TV forecasts-- f03+ (12utc, atmos.25, ensemble members -- 1 collection)
+# regular backfill-- f00, f03 (all runs, regular forecasts -- 3 collections)
+# TV backfill-- f00, f03 (all runs, TV ensemble members -- 1 collection)
 # extra backfill-- f06 (00/08/18utc, missing f00 mean -- 1? collection)
 
 # parameters from Rasp and Lerch 2018
 gefs_params = pd.read_csv('config/gefs.csv')
-gefs_params = rasp_params.loc[~pd.isnull(rasp_params['search']), :]
+gefs_params = gefs_params.loc[~pd.isnull(gefs_params['search']), :]
 gefs_searches = gefs_params['search'].unique()
 # April through Sept., starting 2021
-runs_daily_12utc = pd.date_range(start=f"{2021}-04-01 12:00", periods=183, freq='D')
-for y in range(2022, 2025):
-    y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
-    runs_daily_12utc = runs_daily_12utc.union(y_runs)
+year_runs = [ pd.date_range(start=f"{y}-04-01 00:00", periods=183 * 4,
+                            freq='6h').to_series() for y in range(2021, 2025) ]
+all_runs = pd.concat(year_runs).index
+runs_12utc = all_runs[np.arange(len(all_runs)) % 4 == 2]
+runs_not_12utc = all_runs[np.arange(len(all_runs)) % 4 != 2]
 gefs_fxx_fct = range(3, 24 * 8, 3) # out to 8 days ahead
 
 # f03+
-gefs_fct_args_list = make_collection_args(runs_daily_12utc, gefs_fxx_fct,
+gefs_fct_args_list = make_collection_args(runs_12utc, gefs_fxx_fct,
                                           'gefs',
                                           ['atmos.25', 'atmos.5', 'atmos.5b'],
                                           search=gefs_searches)
@@ -150,7 +153,7 @@ gefs_fct_args_list = make_collection_args(runs_daily_12utc, gefs_fxx_fct,
 gefs_tv_fct = {
     'model': 'gefs',
     'product': 'atmos.25',
-    'DATES': runs_daily_12utc,
+    'DATES': runs_12utc,
     'fxx': gefs_fxx_fct,
     'members': range(0, 31),
     'extent': nyc_extent,
@@ -161,34 +164,36 @@ gefs_tv_fct = {
 }
 
 # now f00
-gefs_f00_args_list = make_collection_args(runs_daily_12utc, [0],
+gefs_f00_args_list = make_collection_args(all_runs, [0],
                                           'gefs',
                                           ['atmos.25', 'atmos.5', 'atmos.5b'],
                                           search=gefs_searches)
 gefs_tv_f00 = gefs_tv_fct.copy()
 gefs_tv_f00['fxx'] = [0]
+gefs_tv_f00['DATES'] = all_runs
 
 # now f03
-gefs_f03_args_list = make_collection_args(runs_daily_12utc, [3],
+gefs_f03_args_list = make_collection_args(runs_not_12utc, [3],
                                           'gefs',
                                           ['atmos.25', 'atmos.5', 'atmos.5b'],
                                           search=gefs_searches)
 gefs_tv_f03 = gefs_tv_f00.copy()
 gefs_tv_f03['fxx'] = [3]
+gefs_tv_f03['DATES'] = runs_not_12utc
 
 # now f06 (a few variables missing from the f00 files)
-gefs_f00_products = find_variable_product(runs_daily_12utc, [0], 'gefs',
+gefs_f00_products = find_variable_product(runs_not_12utc, [0], 'gefs',
                                           ['atmos.25', 'atmos.5', 'atmos.5b'],
                                           gefs_searches, member=0)
 # what's missing from f00?
 f00_missing = [ v for v in gefs_searches if gefs_f00_products[v] is None ]
-gefs_f06_args_list = make_collection_args(runs_daily_12utc, [6],
+gefs_f06_args_list = make_collection_args(runs_not_12utc, [6],
                                           'gefs',
                                           ['atmos.25', 'atmos.5', 'atmos.5b'],
                                           search=f00_missing)
 
-gefs_all_collections_args = gefs_fct_args_list + gefs_tv_fct + \
-    gefs_f00_args_list + gefs_tv_f00 + gefs_f03_args_list + gefs_tv_f03 + \
+gefs_all_collections_args = gefs_fct_args_list + [gefs_tv_fct] + \
+    gefs_f00_args_list + [gefs_tv_f00] + gefs_f03_args_list + [gefs_tv_f03] + \
     gefs_f06_args_list
 
 gefs_collections = []
@@ -197,50 +202,20 @@ for collection_args in gefs_all_collections_args:
     gefs_collections.append(collection)
 
 # how much data is all of this?
+collection_sizes = []
 for collection in gefs_collections:
+    collection_sizes.append(collection.collection_size(humanize=False))
     print(collection.collection_size())
 
+# how big is the whole thing?
+from humanize import naturalsize
+naturalsize(sum(collection_sizes))
+
 for i, collection in enumerate(gefs_collections):
+    if 1 == 3:
+        continue
     print(f'Starting collection {i+1} of {len(gefs_collections)}')
     collection.download()
-
-
-# downloader = NwpCollection(y_runs, 'gefs', 'atmos.5', product_search, fxx,
-#                            members=members, save_dir='nwp_test',
-#                            extent=nyc_extent)
-# downloader.get_status()
-# downloader.collection_size()
-# x = downloader.download()
-
-
-
-
-# how big is the whole thing?
-
-runs = pd.date_range(start=f"{2021}-04-01 12:00", periods=183, freq='D')
-for y in range(2022, 2025):
-    y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
-    runs = runs.union(y_runs)
-fxx = range(3, 24 * 8, 3)
-members = ['avg']
-
-downloader2 = NwpCollection(y_runs, 'gefs', 'atmos.5', product_search, fxx,
-                            members=members, save_dir='nwp_test',
-                            extent=nyc_extent)
-
-downloader2.collection_size()
-downloader2.file_size
-
-product_params = rasp_params.loc[rasp_params['product'] == 'atmos.25', :]
-product_search = '|'.join(product_params['search'])
-
-downloader3 = NwpCollection(y_runs, 'gefs', 'atmos.25', product_search, fxx,
-                            members=members, save_dir='nwp_test',
-                            extent=nyc_extent)
-
-downloader3.collection_size()
-downloader2.file_size
-
 
 
 
