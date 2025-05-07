@@ -5,6 +5,7 @@ import glob
 import numpy as np
 import pandas as pd
 import xarray as xr
+from herbie import Herbie
 from nwpdownload import NwpCollection
 from nwpdownload.kubernetes import k8s_download_cluster
 from dask.distributed import Client
@@ -22,31 +23,81 @@ from dask.distributed import Client
 
 # GEFS adds another twist, because I need individual ensemble members to
 # calculate TV statistics. So for TV variables get the ensemble members, while
-# for the rest get only the means and spreads. And it's also split into
-# different "product" files. They should probably make it even more complicated
-# IMO, otherwise a few people may actually use the data.
+# for the rest get only the means and spreads (actually never mind the spreads--
+# they're useless because we don't know the covariances, so they can't be
+# aggregated over time). And it's also split into different "product" files.
+# They should probably make it even more complicated IMO, otherwise a few people
+# may actually use the data.
 
 # Because there are so many sets of data to collect, I think it's best to
-# collect the details in **kwargs dictionaries, then iterate over them.
+# collect the details in **kwargs dictionaries, then iterate over them. Also
+# let's make some functions to automatically find the product for each variable,
+# and set up the NwpCollection arguments.
 
-# (For now just get the 8 days of forecasts, to get started.)
+def find_variable_product(DATES, fxx, model, products, search, member=None):
+    '''Find the product containing the given variable (represented by the search
+    term).
+    '''
+    product_herbie = {}
+    for p in products:
+        product_herbie[p] = Herbie(DATES[0], fxx=fxx[0], model=model, product=p,
+                                   member=member)
+    var_products = {}
+    for s in search:
+        var_products[s] = None
+        for p in products:
+            p_inv = product_herbie[p].inventory(search=s)
+            if p_inv.shape[0]:
+                var_products[s] = p
+                break
+    return var_products
 
+def make_collection_args(DATES, fxx, model, products, search):
+    '''Given variables and products, create the collection arguments for each
+    product.
+    '''
+    if model == 'gefs':
+        member = 0
+    else:
+        member = None
+    var_products = find_variable_product(DATES, fxx, model, products, search,
+                                         member=member)
+    args_list = []
+    for p in products:
+        # which variables are in this product?
+        p_vars = [ v for v in search if var_products[v] == p ]
+        members = None
+        if model == 'gefs':
+            if p == 'atmos.5b':
+                # no "avg" dataset is available for this product, so it must be
+                # derived from the members
+                members = range(31)
+            else:
+                members = ['avg']
+        args = {
+            'model': model,
+            'product': p,
+            'DATES': DATES,
+            'fxx': fxx,
+            'members': members,
+            'extent': nyc_extent,
+            'search': '|'.join(p_vars)
+        }
+        args_list.append(args)
+    return args_list
+
+
+# Some common variables
+
+# speed this up immensely with the help of a cluster running kubernetes
 cluster = k8s_download_cluster('wmay-download',
                                '/rdma/hulk/coe/Will/nwp_download',
                                n_workers=100, threads_per_worker=6,
                                port_forward_cluster_ip=True)
 client = Client(cluster)
 
-# common parameters
+# NYC lat/lon boundaries
 nyc_extent = (285.5, 286.5, 40, 41.5)
-runs_daily_12utc = pd.date_range(start=f"{2021}-04-01 12:00", periods=183, freq='D')
-for y in range(2022, 2025):
-    y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
-    runs_daily_12utc = runs_daily_12utc.union(y_runs)
-
-# For variables, I think the cleanest option would be to list the desired
-# variables, then check an inventory to decide which product to fetch them from.
-# Rather than manually record the product for each variable
 
 
 # GEFS
@@ -73,56 +124,29 @@ for y in range(2022, 2025):
 
 # So the set of downloads are--
 
-# regular forecasts-- f00+ (12utc, each product, mean+spread -- 3 collections)
+# regular forecasts-- f00+ (12utc, each product, mean -- 3 collections)
 # TV forecasts-- f00+ (12utc, atmos.25, ensemble members -- 1 collection)
-# backfill-- f00, f03 (00/08/18utc, regular forecasts -- 3 collections)
-# backfill-- f00, f03 (00/08/18utc, TV ensemble members -- 1 collection)
-# backfill-- f06 (00/08/18utc, missing f00 mean+spread -- 1? collection)
+# regular backfill-- f00, f03 (00/08/18utc, regular forecasts -- 3 collections)
+# TV backfill-- f00, f03 (00/08/18utc, TV ensemble members -- 1 collection)
+# extra backfill-- f06 (00/08/18utc, missing f00 mean -- 1? collection)
 
-# need to generate the 3 collections from the list of desired variables
-
-from herbie import Herbie
-
-def find_variable_product(DATES, fxx, model, products, search, member=None):
-    '''Find the product containing the given variable (represented by the search
-    term).
-    '''
-    product_herbie = {}
-    for p in products:
-        product_herbie[p] = Herbie(DATES[0], fxx=fxx[0], model=model, product=p,
-                                   member=member)
-    var_products = {}
-    for s in search:
-        var_products[s] = None
-        for p in products:
-            p_inv = product_herbie[p].inventory(search=s)
-            if p_inv.shape[0]:
-                var_products[s] = p
-                break
-    return var_products
-
-
-gefs_param_products = find_variable_product(runs_daily_12utc, gefs_fxx_fct,
-                                            'gefs',
-                                            ['atmos.25', 'atmos.5', 'atmos.5b'],
-                                            search=rasp_params['search'].unique(),
-                                            member=0)
-
-find_variable_product(runs_daily_12utc, [0],
-                      'gefs',
-                      ['atmos.25', 'atmos.5', 'atmos.5b'],
-                      search=rasp_params['search'].unique(),
-                      member=0)
-# only difference is TCDC
-
-
-def make_collection_args(DATES, fxx, model, products, search, member=None):
-    pass
-
-# would be nice to generate the backfill collections as well
-
+# parameters from Rasp and Lerch 2018
+gefs_params = pd.read_csv('config/gefs.csv')
+gefs_params = rasp_params.loc[~pd.isnull(rasp_params['search']), :]
+gefs_searches = gefs_params['search'].unique()
+# April through Sept., starting 2021
+runs_daily_12utc = pd.date_range(start=f"{2021}-04-01 12:00", periods=183, freq='D')
+for y in range(2022, 2025):
+    y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
+    runs_daily_12utc = runs_daily_12utc.union(y_runs)
 gefs_fxx_fct = range(3, 24 * 8, 3) # out to 8 days ahead
 
+# f03+
+gefs_fct_args_list = make_collection_args(runs_daily_12utc, gefs_fxx_fct,
+                                          'gefs',
+                                          ['atmos.25', 'atmos.5', 'atmos.5b'],
+                                          search=gefs_searches)
+# also want individual ensembles to calculate TV statistics
 gefs_tv_fct = {
     'model': 'gefs',
     'product': 'atmos.25',
@@ -136,105 +160,57 @@ gefs_tv_fct = {
     ])
 }
 
-gefs_0p25_fct = {
-    'model': 'gefs',
-    'product': 'atmos.25',
-    'DATES': runs_daily_12utc,
-    'fxx': gefs_fxx_fct,
-    'members': ['avg', 'spread'],
-    'extent': nyc_extent,
-    'search': '|'.join([
-        ':TMP:2 m above ground:',
-        ':DPT:2 m above ground:'
-    ])
-}
+# now f00
+gefs_f00_args_list = make_collection_args(runs_daily_12utc, [0],
+                                          'gefs',
+                                          ['atmos.25', 'atmos.5', 'atmos.5b'],
+                                          search=gefs_searches)
+gefs_tv_f00 = gefs_tv_fct.copy()
+gefs_tv_f00['fxx'] = [0]
 
-gefs_0p5a_fct = {
-    'model': 'gefs',
-    'product': 'atmos.25',
-    'DATES': runs_daily_12utc,
-    'fxx': gefs_fxx_fct,
-    'members': ['avg', 'spread'],
-    'extent': nyc_extent,
-    'search': '|'.join([
-        ':TMP:2 m above ground:',
-        ':DPT:2 m above ground:'
-    ])
-}
+# now f03
+gefs_f03_args_list = make_collection_args(runs_daily_12utc, [3],
+                                          'gefs',
+                                          ['atmos.25', 'atmos.5', 'atmos.5b'],
+                                          search=gefs_searches)
+gefs_tv_f03 = gefs_tv_f00.copy()
+gefs_tv_f03['fxx'] = [3]
 
-gefs_0p5b_fct = {
-    'model': 'gefs',
-    'product': 'atmos.25',
-    'DATES': runs_daily_12utc,
-    'fxx': gefs_fxx_fct,
-    'members': range(0, 31),
-    'extent': nyc_extent,
-    'search': '|'.join([
-        ':TMP:2 m above ground:',
-        ':DPT:2 m above ground:'
-    ])
-}
+# now f06 (a few variables missing from the f00 files)
+gefs_f00_products = find_variable_product(runs_daily_12utc, [0], 'gefs',
+                                          ['atmos.25', 'atmos.5', 'atmos.5b'],
+                                          gefs_searches, member=0)
+# what's missing from f00?
+f00_missing = [ v for v in gefs_searches if gefs_f00_products[v] is None ]
+gefs_f06_args_list = make_collection_args(runs_daily_12utc, [6],
+                                          'gefs',
+                                          ['atmos.25', 'atmos.5', 'atmos.5b'],
+                                          search=f00_missing)
 
-# parameters from Rasp and Lerch 2018
-rasp_params = pd.read_csv('config/gefs.csv')
-rasp_params = rasp_params.loc[~pd.isnull(rasp_params['search']), :]
+gefs_all_collections_args = gefs_fct_args_list + gefs_tv_fct + \
+    gefs_f00_args_list + gefs_tv_f00 + gefs_f03_args_list + gefs_tv_f03 + \
+    gefs_f06_args_list
 
+gefs_collections = []
+for collection_args in gefs_all_collections_args:
+    collection = NwpCollection(**collection_args, save_dir='/mnt/nwpdownload')
+    gefs_collections.append(collection)
 
+# how much data is all of this?
+for collection in gefs_collections:
+    print(collection.collection_size())
 
-rasp_params = rasp_params.loc[~pd.isnull(rasp_params['product']), :]
-rasp_params = rasp_params.loc[rasp_params['fileType'] == 'forecast', :]
-# skip atmos.5b for now because there's no average file
-rasp_params = rasp_params.loc[rasp_params['product'] != 'atmos.5b', :]
-# define the spatial extent for subsetting
-nyc_extent = (285.5, 286.5, 40, 41.5)
-# April through Sept., starting 2021
-runs = pd.date_range(start=f"{2021}-04-01 12:00", periods=183, freq='D')
-for y in range(2022, 2025):
-    y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
-    runs = runs.union(y_runs)
-# analysis file contains different variables, so it must be downloaded
-# separately
-# fxx = range(0, 24 * 8, 3)
-fxx = range(3, 24 * 8, 3)
-# members = range(0, 31)
-members = ['avg']
-
-downloader = NwpCollection(y_runs, 'gefs', 'atmos.5', product_search, fxx,
-                           members=members, save_dir='nwp_test',
-                           extent=nyc_extent)
+for i, collection in enumerate(gefs_collections):
+    print(f'Starting collection {i+1} of {len(gefs_collections)}')
+    collection.download()
 
 
-
-# # would be nice if we could get a progress bar here
-# for y in range(2021, 2025):
-#     print(f'--- Starting year {y}')
-#     y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
-#     for product in list(rasp_params['product'].unique()):
-#         print(f'-- Starting product {product}')
-#         product_params = rasp_params.loc[rasp_params['product'] == product, :]
-#         product_search = '|'.join(product_params['search'])
-#         downloader = HerbieCollection(y_runs, 'gefs', product, product_search, fxx,
-#                                       members=members, save_dir='data/herbie',
-#                                       extent=nyc_extent, extent_name='nyc')
-#         print(f'-- search hash {downloader.search_hash}')
-#         downloader.download(threads=5)
-
-
-# testing new NwpCollection
-y_runs = pd.date_range(start=f"{2021}-04-01 12:00", periods=5, freq='D')
-product_params = rasp_params.loc[rasp_params['product'] == 'atmos.5', :]
-product_search = '|'.join(product_params['search'])
-fxx = range(3, 24, 3)
-
-downloader = NwpCollection(y_runs, 'gefs', 'atmos.5', product_search, fxx,
-                           members=members, save_dir='nwp_test',
-                           extent=nyc_extent)
-
-downloader.get_status()
-
-downloader.collection_size()
-
-x = downloader.download()
+# downloader = NwpCollection(y_runs, 'gefs', 'atmos.5', product_search, fxx,
+#                            members=members, save_dir='nwp_test',
+#                            extent=nyc_extent)
+# downloader.get_status()
+# downloader.collection_size()
+# x = downloader.download()
 
 
 
