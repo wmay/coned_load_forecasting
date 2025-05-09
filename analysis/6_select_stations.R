@@ -199,6 +199,7 @@ system_results = list(
 )
 row.names(system_results$errors) = c('NYC+LGA', 'Stepwise forward selection')
 saveRDS(system_results, 'results/select_stations/system_results.rds')
+# system_results = readRDS('results/select_stations/system_results.rds')
 
 
 
@@ -372,6 +373,7 @@ stforw_sites_list = lapply(networks$id, function(id) {
 })
 names(stforw_sites_list) = networks$id
 saveRDS(stforw_sites_list, 'results/select_stations/selected_sites.rds')
+# stforw_sites_list = readRDS('results/select_stations/selected_sites.rds')
 
 table(lengths(stforw_sites_list))
  # 1  2  3  4  5  6  8  9 10 11 13 
@@ -483,6 +485,187 @@ dev.off()
 #   ggplot(aes(count, reorder(stid, count), fill = network)) +
 #   geom_bar(stat = 'identity', orientation = 'y') +
 #   scale_fill_discrete(type = hcl.colors(3, 'Dark 3'))
+
+
+
+### Case studies ###
+
+# Find days with largest sea breeze temperature gradient. Once again we are
+# using the Gedzelman criteria.
+
+system_tvs = get_combined_tv(system_results$stids) %>%
+  na.omit
+
+sea_breeze_days = get_hourly_asos_data(16) %>%
+  subset(station %in% c('JFK', 'NYC')) %>%
+  transform(day = as.Date(valid_hour), tmpc = (tmpf - 32) * (5/9),
+            pres_pa = alti * 133.322, drct_rad = (drct / 360) * 2 * pi) %>%
+  transform(wind_s = -sknt * cos(drct_rad),
+            wetbulb = GetTWetBulbFromRelHum(tmpc, relh / 100, pres_pa)) %>%
+  transform(drywet = (tmpc + wetbulb) / 2) %>%
+  subset(select = c(day, station, tmpf, tmpc, wind_s, drywet)) %>%
+  reshape(direction = 'wide', timevar = 'station', idvar = 'day') %>%
+  # lots of missing wind values due to wind being recorded as "variable"
+  transform(wind_s.JFK = replace(wind_s.JFK, is.na(wind_s.JFK), 0),
+            wind_s.NYC = replace(wind_s.NYC, is.na(wind_s.NYC), 0)) %>%
+  transform(jfk_windier = wind_s.JFK > 5 & wind_s.JFK - wind_s.NYC > 5,
+            nyc_warmer = tmpc.NYC - tmpc.JFK >= 2.2) %>%
+  transform(sea_breeze = jfk_windier & nyc_warmer,
+            # gradient = tmpc.NYC - tmpc.JFK
+            gradient = drywet.NYC - drywet.JFK) %>%
+  subset(sea_breeze) %>%
+  # ok now we have to limit to weekdays etc.
+  subset(day %in% data_wide$day) %>%
+  # and have to make sure we have the system-level load data
+  subset(day %in% peaks$day) %>%
+  # and have to make sure we have the station data, omfg dude
+  subset(day %in% system_tvs$day) %>%
+  # add attributes used for case selection
+  transform(year = trunc(day, 'years'))
+
+sea_breeze_days = sea_breeze_days[with(sea_breeze_days, order(gradient, tmpc.NYC, decreasing = T)), ]
+# # we'll try 2021-05-26 and 2023-06-02
+# case_days = as.Date(c('2021-05-26', '2023-06-02'))
+
+case_days = sea_breeze_days %>%
+  subset(tmpf.NYC >= 80) %>%
+  subset(!duplicated(year)) %>%
+  getElement('day') %>%
+  sort
+
+# case_days = sea_breeze_days[!duplicated(sea_breeze_days$year), 'day']
+# case_days = sort(case_days)
+
+
+# fit TV/load regressions, and get sfs vs nyc+lga prediction residuals
+
+# this function takes readings and stids, and returns prediction residuals from
+# the cubic polynomial regression
+get_residuals = function(loads, stids, days) {
+  loads = transform(loads, year = trunc(day, 'years'))
+  lm_dat = get_combined_tv(stids) %>%
+    na.omit %>%
+    merge(loads)
+  if (!all(days %in% lm_dat$day)) {
+    missing_days = days[!days %in% lm_dat$day]
+    stop('missing days ', missing_days)
+  }
+  fit = lm(reading ~ factor(year) * poly(tv, 3), lm_dat)
+  resid(fit)[lm_dat$day %in% days]
+}
+
+get_case_study = function(loads, stids, days) {
+  sfs_resid = get_residuals(loads, stids, days)
+  nyclga_resid = get_residuals(loads, c('NYC', 'LGA'), days)
+  out = cbind(nyclga = nyclga_resid, sfs = sfs_resid)
+  row.names(out) = as.character(days)
+  out
+}
+
+system_case_studies = get_case_study(peaks, system_results$stids, case_days)
+
+system_case_studies_long = as.data.frame(system_case_studies) %>%
+  transform(day = as.Date(row.names(system_case_studies))) %>%
+  reshape(direction = 'long', varying = 1:2,
+          v.names = 'resid', timevar = 'stations', times = c('nyclga', 'sfs'),
+          idvar = 'day')
+
+ggplot(system_case_studies_long, aes(factor(day), abs(resid), fill = stations)) +
+  geom_col(position=position_dodge()) +
+  xlab('Date') + ylab('Prediction error (MW)')
+
+network_case_studies = lapply(networks$id, function(id) {
+  load_col = paste0('reading.', id)
+  loads = data_wide[, c('day', load_col)]
+  colnames(loads)[2] = 'reading'
+  get_case_study(loads, stforw_sites_list[[id]], case_days)
+})
+
+case_study_diffs =
+  sapply(network_case_studies, function(x) abs(x[, 1]) - abs(x[, 2])) %>%
+  t
+
+hist(case_study_diffs[, 1])
+hist(case_study_diffs[, 2])
+
+# # requires package "beeswarm"
+# as.data.frame(case_study_diffs) %>%
+#   transform(network = networks$id, borough = networks$Borough) %>%
+#   reshape(direction = 'long', varying = 1:2, v.names = 'change',
+#           timevar = 'day', times = case_days, idvar = c('network', 'borough')) %>%
+#   ggplot(aes(x = factor(day), y = change, fill = borough)) +
+#   ggdist::geom_swarm(dotsize = 2.5, stackratio = 2, overlaps = 'nudge', color = NA) +
+#   stat_summary(aes(fill = 'Mean'), fun = mean, geom = "point", shape = 95, size = 50)
+
+diffs_long = as.data.frame(case_study_diffs) %>%
+  transform(network = networks$id, borough = networks$Borough) %>%
+  reshape(direction = 'long', varying = 1:ncol(case_study_diffs),
+          v.names = 'change', timevar = 'day', times = case_days,
+          idvar = c('network', 'borough'))
+
+diffs_long %>%
+  ggplot(aes(factor(day), change, color = borough, group = 1)) +
+  ggbeeswarm::geom_beeswarm(cex = 1.5, size = 4, alpha = .8) +
+  stat_summary(aes(shape = 95, size = 45), fun = mean, geom = "point", color = '#444444') +
+  scale_x_discrete(position = "top") +
+  scale_color_brewer('Borough', palette = 'Set1') +
+  scale_size_identity() +
+  scale_shape_identity('value') +
+  xlab('Date') + ylab('Prediction improvement (MW)')
+# ok now I like it
+
+case_study_results = list(
+    days = case_days,
+    system_errors = system_case_studies_long,
+    network_diffs = diffs_long
+)
+saveRDS(case_study_results, 'results/select_stations/case_study.rds')
+# case_study_results = readRDS('results/select_stations/case_study.rds')
+
+case_study_results$network_diffs %>%
+  ggplot(aes(factor(day), change, fill = borough)) +
+  geom_boxplot() +
+  scale_color_brewer('Borough', palette = 'Set1') +
+  xlab('Date') + ylab('Prediction improvement (MW)')
+# not my favorite
+
+# diffs_long %>%
+#   boxplot(change ~ day + borough, data = ., col = factor(.$borough),
+#           #col = c("gold","darkgreen"),
+#           main="Tooth Growth",
+#           xlab="Suppliment and Dose")
+
+# as.data.frame(case_study_diffs) %>%
+#   transform(network = networks$id) %>%
+#   reshape(direction = 'long', varying = 1:3, v.names = 'change',
+#           timevar = 'day', times = case_days, idvar = 'network') %>%
+#   boxplot(change ~ day + borough, data = ., col = .$borough,
+#           #col = c("gold","darkgreen"),
+#           main="Tooth Growth",
+#           xlab="Suppliment and Dose")
+
+# summary(sapply(network_case_studies, function(x) abs(x[1, 1])))
+# summary(sapply(network_case_studies, function(x) abs(x[1, 2])))
+
+# resids_long = lapply(network_case_studies, function(x) {
+#   as.data.frame(x) %>%
+#     transform(day = as.Date(row.names(x))) %>%
+#     reshape(direction = 'long', varying = 1:2, v.names = 'resid',
+#             timevar = 'stations', times = c('nyclga', 'sfs'), idvar = 'day')
+# }) %>%
+#   do.call(rbind, .)
+
+# boxplot(abs(resid) ~ stations + day, data = resids_long,
+#         col = c("gold","darkgreen"), main="Tooth Growth",
+#         xlab="Suppliment and Dose")
+
+
+
+# make nice plots
+
+# system-level comparison barplots
+
+# network-level difference histograms
 
 
 

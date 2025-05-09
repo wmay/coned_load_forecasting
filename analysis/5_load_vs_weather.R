@@ -288,7 +288,7 @@ stations = readRDS('results/station_data/stations.rds')
 # these sites are used for outlier detection
 test_sites = c('SIFKIL', 'JFK', 'BRON')
 
-peaks = list.files('data/coned', 'Network.*\\.csv', full.names = T) %>%
+peaks = list.files('data/coned', '\\.csv', full.names = T) %>%
   lapply(read.csv) %>%
   do.call(rbind, .) %>%
   transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M:%S'),
@@ -521,7 +521,7 @@ for (id in colnames(o4$outliers)) {
 }
 
 saveRDS(cleaned_reg_data, 'results/load_vs_weather/tv_and_load.rds')
-#reg_data = readRDS('results/load_vs_weather/tv_and_load.rds')
+#cleaned_reg_data = readRDS('results/load_vs_weather/tv_and_load.rds')
 
 
 
@@ -1018,3 +1018,36 @@ networks %>%
   transform(val = get_factor_coefs(dist_lm, 'network')[id]) %>%
   plot_network_data(aes(fill = val))
 # I think this is associated with peak loads
+
+
+# look at system load curves by year
+
+peaks = read.csv('data/coned/Borough and System Data 2020-2024.csv') %>%
+  transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M'),
+            # some inconsistency, but various forms of 'False' mean data is fine
+            BAD = !startsWith(BAD, 'F')) %>%
+  subset(!is.na(DT)) %>%
+  subset(as.POSIXlt(DT)$hour %in% 9:21) %>%
+  # get daily load peaks
+  transform(day = as.Date(DT, tz = 'EST5EDT')) %>%
+  aggregate(READING ~ day, ., max) %>%
+  # only include may through september
+  subset(as.integer(format(day, '%m')) %in% 5:9)
+names(peaks) = tolower(names(peaks))
+peaks$tv.LGA = with(cleaned_reg_data, tv.LGA[match(peaks$day, day)])
+
+# fit cubic polynomial to each year and plot the curves
+load_curves = peaks %>%
+  na.omit %>%
+  transform(year = as.integer(format(day, '%Y'))) %>%
+  split(.$year) %>%
+  sapply(function(x) {
+    coef(lm(reading ~ poly(tv.LGA, 3, raw = T), x))
+  })
+
+curve(cbind(1, poly(x, 3, raw = T)) %*% load_curves[, 1], 55, 85,
+      col = "red")
+for (i in 2:3) {
+  curve(cbind(1, poly(x, 3, raw = T)) %*% load_curves[, i], 55, 85,
+        col = "red", add = T)
+}
