@@ -1,0 +1,15 @@
+name: nwpdownload-env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10.17
+  - lz4=4.3.3
+  - numpy=2.2.5
+  - toolz=0.12.0
+  - dask=2025.4.1
+  - distributed=2025.4.1
+  - wgrib2
+  - pip # this is redundant but conda complains if it isn't there
+  - pip:
+    - nwpdownload[k8s]@git+https://github.com/ASRCsoft/nwpdownload
+    - ipython
