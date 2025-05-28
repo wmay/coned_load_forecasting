@@ -174,7 +174,9 @@ worker_resources = {'limits': {'cpu': '1'}} # because this is disk-intensive
 scheduler_address = f'tcp://wmay-dask-scheduler:8786'
 env = {'HDF5_USE_FILE_LOCKING': 'FALSE',
        'DASK_SCHEDULER_ADDRESS': scheduler_address,
-       'EXTRA_PIP_PACKAGES': 'netCDF4 git+https://github.com/ASRCsoft/nwpdownload'}
+       # have to use eccodes <2.39 due to an issue reading the regional subset
+       # files
+       'EXTRA_PIP_PACKAGES': 'eccodes==2.38 netCDF4 git+https://github.com/ASRCsoft/nwpdownload'}
 
 spec = make_cluster_spec(name='wmay-dask', n_workers=2,
                          resources=worker_resources, env=env)
