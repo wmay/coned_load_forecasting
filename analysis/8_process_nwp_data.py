@@ -198,7 +198,7 @@ cluster.wait_for_workers(10)
 client = Client(cluster)
 
 
-r1 = CollectionReader(runs_12utc[:30], model='gefs', product='atmos.25',
+r1 = CollectionReader(runs_12utc, model='gefs', product='atmos.25',
                       fxx=gefs_fxx_fct, members=range(0, 31), extent=nyc_extent,
                       search=':TMP:2 m above ground:', save_dir='/mnt/nwpdownload')
 ds1 = r1.delayed_ds()
@@ -267,10 +267,10 @@ ds2 = xr.open_dataset('results/process_nwp_data/gefs_tv.nc', mask_and_scale=True
 
 # Somehow we got temperature values above 29000, which I hope is a misreading of
 # missing data.
-(ds2['t2m'] > 29000).sum()
-
-ds2['t2m'].values = np.where(ds2['t2m'] > 500, np.nan, ds2['t2m'].values)
-ds2['d2m'].values = np.where(ds2['d2m'] > 500, np.nan, ds2['d2m'].values)
+# (ds2['t2m'] > 29000).sum()
+# ds2['t2m'].values = np.where(ds2['t2m'] > 500, np.nan, ds2['t2m'].values)
+# ds2['d2m'].values = np.where(ds2['d2m'] > 500, np.nan, ds2['d2m'].values)
+# fixed!
 
 # get the hour in EST
 est_hour = ((12 - 5) + ds2['step']) % 24
