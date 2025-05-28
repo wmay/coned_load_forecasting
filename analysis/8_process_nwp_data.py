@@ -115,8 +115,9 @@ class CollectionReader(NwpCollection):
 
     def _fxx_arr_map(self, var_conf, block_id=None, block_info=None):
         # print(block_id)
-        return np.stack([ self._members_arr((block_id[0], i), var_conf)
-                          for i in range(len(self.fxx)) ])
+        out = np.stack([ self._members_arr((block_id[0], i), var_conf)
+                         for i in range(len(self.fxx)) ])
+        return np.expand_dims(out, 0)
 
     # Rather than create a dask array for each file, create one for each
     # forecast run. This is much more manageable for the dask scheduler.
