@@ -257,13 +257,13 @@ def coned_wet_bulb(db, dp):
     return as_fahrenheit(wbc)
 
 def coned_eff_temp(db, dp):
-    dbc = db - 273.15
+    dbf = as_fahrenheit(db - 273.15)
     wbf = coned_wet_bulb(db, dp)
-    return (as_fahrenheit(dbc) + wbf) / 2
+    return (dbf + wbf) / 2
 
 
 
-ds2 = xr.open_dataset('results/process_nwp_data/gefs_tv.nc', mask_and_scale=True)
+ds2 = xr.open_dataset('results/process_nwp_data/gefs_tv.nc')
 
 # Somehow we got temperature values above 29000, which I hope is a misreading of
 # missing data.
@@ -272,21 +272,58 @@ ds2 = xr.open_dataset('results/process_nwp_data/gefs_tv.nc', mask_and_scale=True
 # ds2['d2m'].values = np.where(ds2['d2m'] > 500, np.nan, ds2['d2m'].values)
 # fixed!
 
+# how many missing values did we end up with?
+np.isnan(ds2['t2m']).any(['latitude', 'longitude']).sum()
+# 23 files-- almost none! Not even one set of ensemble members?
+
 # get the hour in EST
 est_hour = ((12 - 5) + ds2['step']) % 24
 ds2 = ds2.assign_coords({'est_hour': est_hour})
 est_day = ((12 - 5) + ds2['step']) // 24
 ds2 = ds2.assign_coords({'est_day': est_day})
 
+# what hours did missing data occur?
+missing_files = np.isnan(ds2['t2m']).any(['latitude', 'longitude'])
+missing_files.sum(['time', 'number']).\
+    set_index(step=['est_hour', 'est_day']).unstack().\
+    sel(est_hour=slice(9, 21)).sum('est_day').\
+    astype(int).to_dataframe()
+# we have 6 missing files between 9am and 9pm
+
 # use only 9am to 9pm
 ds2 = ds2.where((ds2['est_hour'] >= 9) & (ds2['est_hour'] <= 21), drop=True)
 
 ds2['eff_temp'] = coned_eff_temp(ds2['t2m'], ds2['d2m'])
-eff_temps = ds2['eff_temp'].groupby('est_day').max()
+eff_temps = ds2['eff_temp'].groupby('est_day').max(skipna=False)
 
 np.isnan(eff_temps).sum() / eff_temps.size
-# somehow 60% of this is missing, omfg
+
+eff_temps.to_netcdf('results/process_nwp_data/gefs_eff_temps.nc')
+
+tv = eff_temps.sel(est_day=slice(2, None)) * .7 +\
+    eff_temps.sel(est_day=slice(1, 6)).values * .2 +\
+    eff_temps.sel(est_day=slice(0, 5)).values * .1
+
+tv.to_netcdf('results/process_nwp_data/gefs_tv2.nc')
+
+# let's see how much forecast variation there is, split by forecast day
+tv.std('number').mean(['time', 'latitude', 'longitude']).to_dataframe()
+#          eff_temp
+# est_day          
+# 2        1.347529
+# 3        1.660509
+# 4        1.954607
+# 5        2.288087
+# 6        2.632163
+# 7        2.987738
+
+# import matplotlib.pyplot as plt
+# fig, axs = plt.subplots(ncols=6)
+# for i in range(2, 8):
+#     tv.sel(est_day=i).std('number').plot(ax=axs[i - 2])
 
 
 # for other variables, define days as starting 9pm (because that's the latest we
 # include for effective temperature) and just get the mean by day
+
+# function to convert netcdf file to daily netcdf file
