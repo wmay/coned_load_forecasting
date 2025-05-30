@@ -55,7 +55,7 @@
 # - fix predictors (correctly calculate daily mean, etc.)
 # - test 7-day ahead forecasts
 
-
+setwd('..')
 library(psychrolib)
 library(magrittr)
 library(stars) # also requires ncmeta
@@ -64,10 +64,10 @@ library(quantregForest)
 # library(crch)
 library(scoringRules)
 library(beepr)
-source('../R/load_data.R')
-source('../R/coned_tv.R')
+source('R/load_data.R')
+source('R/coned_tv.R')
 # block CV, mean pinball loss, etc.
-source('../R/mlr3_additions.R')
+source('R/mlr3_additions.R')
 
 # get_effective_temp = function(x) {
 #   drywet = with(x, dry_wet_ave(tair, relh / 100, pres * 100))
@@ -184,6 +184,17 @@ make_predictor_dataset2 = function(nc, init, lon, lat, days_ahead = 1) {
     merge(eff_tmp, all.x = TRUE)
 }
 
+make_nwp_tv_dataset = function(nc, lon, lat, days_ahead = 2) {
+  # when read by `read_mdim` time values are read as dates despite having a time
+  # as well
+  dates = attr(nc, 'dimensions')$time$values + days_ahead
+  # days ahead starts at 2 in the array
+  if (days_ahead < 2) stop('TV only available starting day 2')
+  tv = nc[['eff_temp']][lon, lat,, days_ahead - 1, ] %>%
+    colMeans(na.rm = TRUE)
+  data.frame(day = dates, tv = tv)
+}
+
 # based on Rasp+Lerch 2018,
 # https://github.com/slerch/ppnn/blob/7af9af3cfb754b8b6da54d2fe5d917cd54e32b9d/nn_postprocessing/nn_src/losses.py#L14
 crps_loss = function(y_true, y_pred) {
@@ -250,6 +261,7 @@ prepare_multiday_dataset = function(days_ahead = 2) {
   # for (i in 1:3) d_list[[i]]$tv_day = i
   for (i in 1:3) d_list[[i]]$tv_day = (4 - i)
   v.names = with(d_list[[1]], c(names(x), names(y)))
+  tv = make_nwp_tv_dataset(gefs_tv, 3, 4, days_ahead = days_ahead)
   out = d_list %>%
     lapply(function(x) with(x, cbind(x, y, tv_day, day))) %>%
     do.call(rbind, .) %>%
@@ -257,12 +269,10 @@ prepare_multiday_dataset = function(days_ahead = 2) {
             v.names = v.names) %>%
     # subset(select = -c(eff_temp.1, eff_temp.2, eff_temp.3)) %>%
     subset(select = -c(doy.1, doy.2, doy.3)) %>%
-    na.omit %>%
-    transform(TV = .7 * eff_temp.1 + .2 * eff_temp.2 + .1 * eff_temp.1) %>%
-    # find TV forecast error
-    transform(tv_fc_err = .7 * eff_tmp_fc_err.1 + .2 * eff_tmp_fc_err.2 +
-              .1 * eff_tmp_fc_err.1) %>%
-    subset(select = -c(eff_tmp_fc_err.1, eff_tmp_fc_err.2, eff_tmp_fc_err.3))
+    transform(TV = tv$tv[match(day, tv$day)]) %>%
+    transform(tv_fc_err = TV - system_tv$tv[match(day, system_tv$day)]) %>%
+    subset(select = -c(eff_tmp_fc_err.1, eff_tmp_fc_err.2, eff_tmp_fc_err.3)) %>%
+    na.omit
   x = subset(out, select = -c(day, tv_fc_err))
   x$doy = as.POSIXlt(out$day)$yday
   y = subset(out, select = tv_fc_err)
@@ -271,6 +281,10 @@ prepare_multiday_dataset = function(days_ahead = 2) {
   # tv = system_tv[match(out$day, system_tv$day), 'tv']
   # list(x = out, y = tv)
 }
+
+# strangely `read_mdim` works fine while `read_ncdf` messes up the coordinates
+# gefs_tv = read_ncdf('results/process_nwp_data/gefs_tv2.nc')
+gefs_tv = read_mdim('results/process_nwp_data/gefs_tv2.nc')
 
 
 # set up the effective temp data
@@ -319,6 +333,24 @@ nwp_acc = sapply(2:7, function(i) {
 }) %>%
   t %>%
   as.data.frame
+
+# old (calculated from mean TMP and DWP)
+#   day      MAE     RMSE
+# 1   2 1.536112 2.102919
+# 2   3 1.851774 2.469837
+# 3   4 2.270325 2.830988
+# 4   5 2.624355 3.262561
+# 5   6 3.079295 3.875903
+# 6   7 3.533117 4.485339
+
+# new (mean TV from ens. members) -- it's better!
+#   day      MAE     RMSE
+# 1   2 1.374344 1.857518
+# 2   3 1.635118 2.104380
+# 3   4 2.032850 2.503328
+# 4   5 2.392062 2.923228
+# 5   6 2.829654 3.531663
+# 6   7 3.236689 4.133973
 
 
 # try to simplify this using mlr3
@@ -375,6 +407,9 @@ future::plan('multicore', workers = 3)
 bres = benchmark(bgrid) # it works!
 
 bres$aggregate(c(msr('regr.mean_pinball'), msr('regr.rmse')))
+
+
+# I think the plan is that we run this benchmark over all the models
 
 
 
