@@ -68,6 +68,7 @@ source('R/load_data.R')
 source('R/coned_tv.R')
 # block CV, mean pinball loss, etc.
 source('R/mlr3_additions.R')
+source('R/mlr3_distr.R')
 
 # get_effective_temp = function(x) {
 #   drywet = with(x, dry_wet_ave(tair, relh / 100, pres * 100))
@@ -168,6 +169,9 @@ make_predictor_dataset2 = function(nc, init, lon, lat, days_ahead = 1) {
   init_ind = as.POSIXlt(refDates)$hour == init
   out = lapply(nc, function(x) colMeans(x[lon, lat, ltime, init_ind])) %>%
     as.data.frame
+  # let's remove the sd columns, as they aren't very meaningful or useful
+  sd_col = endsWith(names(out), '_sd')
+  out = out[, !sd_col]
   # I also want max temperature
   tmp_max = apply(nc[['TMP']][lon, lat, ltime, init_ind], 2, max)
   # I also want "effective" temperature
@@ -193,6 +197,17 @@ make_nwp_tv_dataset = function(nc, lon, lat, days_ahead = 2) {
   tv = nc[['eff_temp']][lon, lat,, days_ahead - 1, ] %>%
     colMeans(na.rm = TRUE)
   data.frame(day = dates, tv = tv)
+}
+
+get_gefs_samples = function(nc, lon = 3, lat = 4, days_ahead = 2) {
+  # when read by `read_mdim` time values are read as dates despite having a time
+  # as well
+  dates = attr(nc, 'dimensions')$time$values + days_ahead
+  # days ahead starts at 2 in the array
+  if (days_ahead < 2) stop('TV only available starting day 2')
+  nc[['eff_temp']][lon, lat,, days_ahead - 1, ]
+  tv = nc[['eff_temp']][lon, lat,, days_ahead - 1, ]
+  list(day = dates, tv = t(tv))
 }
 
 # based on Rasp+Lerch 2018,
@@ -247,6 +262,22 @@ prepare_dataset = function(days_ahead = 1) {
   list(x = x, y = y, day = ds$day)
 }
 
+average_columns = function(dat, x) {
+  .1 * dat[, paste0(x, '.1')] + .2 * dat[, paste0(x, '.2')] +
+    .7 * dat[, paste0(x, '.3')]
+}
+
+average_3days = function(dat) {
+  columns = names(dat)[endsWith(names(dat), '.1')]
+  for (n in columns) {
+    new_name = substr(n, 1, nchar(n) - 2)
+    old_names = paste(new_name, 1:3, sep = '.')
+    dat[, new_name] = average_columns(dat, new_name)
+    dat[, old_names] = NULL
+  }
+  dat
+}
+
 prepare_multiday_dataset = function(days_ahead = 2) {
   # x: make a predictor dataset for each day, then combine
   d_list = lapply((days_ahead - 2):days_ahead, prepare_dataset)
@@ -272,7 +303,9 @@ prepare_multiday_dataset = function(days_ahead = 2) {
     transform(TV = tv$tv[match(day, tv$day)]) %>%
     transform(tv_fc_err = TV - system_tv$tv[match(day, system_tv$day)]) %>%
     subset(select = -c(eff_tmp_fc_err.1, eff_tmp_fc_err.2, eff_tmp_fc_err.3)) %>%
-    na.omit
+    na.omit %>%
+    average_3days %>%
+    subset(select = -eff_temp)
   x = subset(out, select = -c(day, tv_fc_err))
   x$doy = as.POSIXlt(out$day)$yday
   y = subset(out, select = tv_fc_err)
@@ -354,35 +387,194 @@ nwp_acc = sapply(2:7, function(i) {
 
 
 # try to simplify this using mlr3
+# install.packages(c('ranger', 'drf', 'RandomForestsGLS'))
+# remotes::install_github("mlr-org/mlr3temporal")
+# distr6_repos =  c(CRAN = 'https://cloud.r-project.org',
+#                   raphaels1 = 'https://raphaels1.r-universe.dev')
+# install.packages('distr6', repos = distr6_repos)
 library(mlr3)
 library(mlr3learners)
-# install.packages('ranger')
 library(mlr3tuning)
 library(mlr3tuningspaces)
-# remotes::install_github("mlr-org/mlr3temporal")
 library(mlr3temporal)
 
 # see notes in `?benchmark` and `?mlr_tuners_random_search`
 lgr::get_logger("mlr3")$set_threshold("warn")
 lgr::get_logger("bbotk")$set_threshold("warn")
 
-# quantile regression forest
-qrf = lrn('regr.ranger', predict_type = 'quantiles', quantiles = c(.1, .5, .9),
-          quantile_response = .5)
-# see docs for `LearnerRegr` for some of the quantile settings
-
-# add an autotuner for qrf
-qrf_at = auto_tuner(
-    tuner = tnr("random_search"),
-    learner = lts(qrf), # default search space
-    resampling = rsmp('block_cv'),
-    measure = msr('regr.mean_pinball'),
-    term_evals = 10
+# A model that uses the predictors as the prediction. Useful for benchmarking
+# NWP models
+LearnerRegrIdent = R6::R6Class(
+  "LearnerRegrIdentity",
+  inherit = LearnerRegr,
+  public = list(
+    initialize = function() {
+      super$initialize(
+        id = "regr.ident",
+        feature_types = c("logical", "integer", "numeric", "factor", "ordered"),
+        predict_types = "distr",
+        packages = character(),
+        properties = c("weights", "missings"),
+        label = "Identity"
+      )
+    }
+  ),
+  private = list(
+      .train = function(task) {
+        TRUE # no model needed
+      },
+      .predict = function(task) {
+        samples = task$data()
+        distlist = split(samples, 1:nrow(samples)) %>%
+          lapply(function(x) distr6::Empirical$new(samples = x))
+        distrs = distr6::VectorDistribution$new(distlist = distlist)
+        list(distr = distrs)
+      }
+  )
 )
 
-forecast_tv_ahead2 = prepare_multiday_dataset(2) %>%
-  with(cbind(x, y[, 1, drop = FALSE])) %>%
-  as_task_regr(target = 'tv_fc_err', id = 'Forecast TV 2')
+# distributional regression with ranger
+LearnerRegrRangerDist = R6::R6Class(
+  "LearnerRegrRangerDist",
+  inherit = LearnerRegr,
+  public = list(
+    initialize = function() {
+      ps = ps(
+          always.split.variables       = paradox::p_uty(tags = "train"),
+          holdout                      = paradox::p_lgl(default = FALSE, tags = "train"),
+          importance                   = paradox::p_fct(c("none", "impurity", "impurity_corrected", "permutation"), tags = "train"),
+          keep.inbag                   = paradox::p_lgl(default = FALSE, tags = "train"),
+          max.depth                    = paradox::p_int(default = NULL, lower = 1L, special_vals = list(NULL), tags = "train"),
+          min.bucket                   = paradox::p_int(1L, default = 1L, tags = "train"),
+          min.node.size                = paradox::p_int(1L, default = 5L, special_vals = list(NULL), tags = "train"),
+          mtry                         = paradox::p_int(lower = 1L, special_vals = list(NULL), tags = "train"),
+          mtry.ratio                   = paradox::p_dbl(lower = 0, upper = 1, tags = "train"),
+          na.action                    = paradox::p_fct(c("na.learn", "na.omit", "na.fail"), default = "na.learn", tags = "train"),
+          node.stats                   = paradox::p_lgl(default = FALSE, tags = "train"),
+          num.random.splits            = paradox::p_int(1L, default = 1L, tags = "train", depends = quote(splitrule == "extratrees")),
+          num.threads                  = paradox::p_int(1L, default = 1L, tags = c("train", "predict", "threads")),
+          num.trees                    = paradox::p_int(1L, default = 500L, tags = c("train", "predict", "hotstart")),
+          oob.error                    = paradox::p_lgl(default = TRUE, tags = "train"),
+          poisson.tau                  = paradox::p_dbl(default = 1, tags = "train", depends = quote(splitrule == "poisson")),
+          regularization.factor        = paradox::p_uty(default = 1, tags = "train"),
+          regularization.usedepth      = paradox::p_lgl(default = FALSE, tags = "train"),
+          replace                      = paradox::p_lgl(default = TRUE, tags = "train"),
+          respect.unordered.factors    = paradox::p_fct(c("ignore", "order", "partition"), tags = "train"),
+          sample.fraction              = paradox::p_dbl(0L, 1L, tags = "train"),
+          save.memory                  = paradox::p_lgl(default = FALSE, tags = "train"),
+          scale.permutation.importance = paradox::p_lgl(default = FALSE, tags = "train", depends = quote(importance == "permutation")),
+          se.method                    = paradox::p_fct(c("jack", "infjack"), default = "infjack", tags = "predict"), # FIXME: only works if predict_type == "se". How to set dependency?
+          seed                         = paradox::p_int(default = NULL, special_vals = list(NULL), tags = c("train", "predict")),
+          split.select.weights         = paradox::p_uty(default = NULL, tags = "train"),
+          splitrule                    = paradox::p_fct(c("variance", "extratrees", "maxstat", "beta", "poisson"), default = "variance", tags = "train"),
+          verbose                      = paradox::p_lgl(default = TRUE, tags = c("train", "predict")),
+          write.forest                 = paradox::p_lgl(default = TRUE, tags = "train")
+      )
+      ps$set_values(num.threads = 1L)
+      super$initialize(
+        id = "regr.rangerdist",
+        feature_types = c("logical", "integer", "numeric", "factor", "ordered"),
+        predict_types = "distr",
+        packages = "ranger",
+        param_set = ps,
+        properties = c("weights", "missings"),
+        label = "Non-homogeneous Gaussian Regression"
+      )
+    }
+  ),
+  private = list(
+    .train = function(task) {
+      pv = self$param_set$get_values(tags = "train")
+      pv = mlr3learners:::convert_ratio(pv, "mtry", "mtry.ratio", length(task$feature_names))
+      if ("weights" %in% task$properties) {
+        pv$case.weights = task$weights$weight
+      }
+      mlr3misc::invoke(
+          ranger::ranger,
+          formula = task$formula(),
+          data = task$data(),
+          quantreg = TRUE,
+          .args = pv
+      )
+    },
+    .predict = function(task) {
+      pv = self$param_set$get_values(tags = "predict")
+      newdata = task$data(cols = task$feature_names)
+      pred = predict(self$model, newdata, type = "quantiles",
+                     what = function(x) c(mean(x), sd(x)))
+      # need to wrap in a `VectorDistribution` (see `LearnerRegr`)
+      params = as.data.frame(pred$predictions)
+      names(params) = c('mean', 'sd')
+      distrs = distr6::VectorDistribution$new(distribution = "Normal",
+                                              params = params)
+      list(distr = distrs)
+    }
+  )
+)
+
+# RandomforestGLS
+LearnerRegrRfgls = R6::R6Class(
+  "LearnerRegrRfgls",
+  inherit = LearnerRegr,
+  public = list(
+    initialize = function() {
+      param_set = paradox::ps(
+          nrnodes             = paradox::p_int(default = NULL, lower = 1L, special_vals = list(NULL), tags = "train"),
+          nthsize             = paradox::p_int(default = NULL, lower = 1L, special_vals = list(NULL), tags = "train"),
+          mtry                = paradox::p_int(lower = 1L, special_vals = list(NULL), tags = "train"),
+          mtry.ratio          = paradox::p_dbl(lower = 0, upper = 1, tags = "train"),
+          ntree               = paradox::p_int(1L, default = 500L, tags = c("train", "predict", "hotstart")),
+          param_estimate      = paradox::p_lgl(default = FALSE, tags = c("train", "predict")),
+          verbose             = paradox::p_lgl(default = TRUE, tags = c("train", "predict"))
+      )
+      # param_set$set_values(xval = 10L)
+      super$initialize(
+        id = "regr.rfgls",
+        feature_types = c("logical", "integer", "numeric", "factor", "ordered"),
+        predict_types = "distr",
+        packages = "RandomForestsGLS",
+        param_set = param_set,
+        properties = c("weights", "missings"),
+        label = "Non-homogeneous Gaussian Regression"
+      )
+    }
+  ),
+  private = list(
+    .train = function(task) {
+      pv = self$param_set$get_values(tags = "train")
+      pv = mlr3learners:::convert_ratio(pv, "mtry", "mtry.ratio", length(task$feature_names))
+      if ("weights" %in% task$properties) {
+        pv$sample.weights = task$weights$weight
+      }
+      # RFGLS_estimate_timeseries(y, X, Xtest = NULL, nrnodes = NULL,
+      #                           nthsize = 20, mtry = 1,
+      #                           pinv_choice = 1, n_omp = 1,
+      #                           ntree = 50, h = 1, lag_params = 0.5,
+      #                           variance = 1,
+      #                           param_estimate = FALSE,
+      #                           verbose = FALSE)
+      mlr3misc::invoke(
+          RandomForestsGLS::RFGLS_estimate_timeseries,
+          y = as.matrix(task$data(cols = task$target_names)),
+          X = as.matrix(task$data(cols = task$feature_names)),
+          .args = pv
+      )
+    },
+    .predict = function(task) {
+      pv = self$param_set$get_values(tags = "predict")
+      newdata = task$data(cols = task$feature_names)
+      pred = RandomForestsGLS::RFGLS_predict(self$model, Xtest = newdata)
+      # get mean and sd from matrix of individual tree responses
+      means = rowMeans(pred$predicted_matrix)
+      sds = apply(pred$predicted_matrix, 1, sd)
+      # need to wrap in a `VectorDistribution` (see `LearnerRegr`)
+      params = data.frame(mean = means, sd = sds)
+      distrs = distr6::VectorDistribution$new(distribution = "Normal",
+                                              params = params)
+      list(distr = distrs)
+    }
+  )
+)
 
 make_tasks = function() {
   sapply(2:7, function(ahead) {
@@ -393,30 +585,186 @@ make_tasks = function() {
   })
 }
 
+make_gefs_tasks = function() {
+  sapply(2:7, function(ahead) {
+    id = paste0('Forecast TV ', ahead)
+    gefs = get_gefs_samples(gefs_tv, days_ahead = ahead)
+    # make sure days are exactly the same as the prediction tasks
+    compare_days = prepare_multiday_dataset(ahead)$day
+    x = gefs$tv[match(compare_days, gefs$day), ]
+    y = system_tv[match(compare_days, system_tv$day), 'tv', drop = FALSE]
+    out = cbind(as.data.frame(x), y) %>%
+      as_task_regr('tv', id = id)
+  })
+}
+
+gefs_tasks = make_gefs_tasks()
 forecast_tv_tasks = make_tasks()
 
-# quick benchmark
-bgrid = benchmark_grid(
-    tasks = forecast_tv_tasks[1:3],
-    learners = qrf_at,
-    resamplings = rsmp('forecast_holdout')
-)
+# learner = LearnerRegrIdent$new()
+# learner$train(gefs_tasks[[1]])
+# p = learner$predict(gefs_tasks[[1]])
+# p$score(msr('regr.mae'))
+# p$score(msr('regr.crps'))
 
-future::plan('multicore', workers = 3)
+# x = distr6::Empirical$new(runif(1000))
 
-bres = benchmark(bgrid) # it works!
+# learner = LearnerRegrDrf$new()
+# learner$train(forecast_tv_tasks[[1]])
+# p = learner$predict(forecast_tv_tasks[[1]])
+# p$score(msr('regr.mae'))
+# p$score(msr('regr.crps'))
 
-bres$aggregate(c(msr('regr.mean_pinball'), msr('regr.rmse')))
+
+
+# # quantile regression forest
+# qrf = lrn('regr.ranger', predict_type = 'quantiles', quantiles = c(.1, .5, .9),
+#           quantile_response = .5)
+# # see docs for `LearnerRegr` for some of the quantile settings
+
+# # add an autotuner for qrf
+# qrf_at = auto_tuner(
+#     tuner = tnr("random_search"),
+#     learner = lts(qrf), # default search space
+#     resampling = rsmp('block_cv'),
+#     measure = msr('regr.mean_pinball'),
+#     term_evals = 10
+# )
+
+# forecast_tv_ahead2 = prepare_multiday_dataset(2) %>%
+#   with(cbind(x, y[, 1, drop = FALSE])) %>%
+#   as_task_regr(target = 'tv_fc_err', id = 'Forecast TV 2')
+
+# # quick benchmark
+# bgrid = benchmark_grid(
+#     tasks = forecast_tv_tasks[1:3],
+#     learners = qrf_at,
+#     resamplings = rsmp('forecast_holdout')
+# )
+
+# future::plan('multicore', workers = 3)
+
+# bres = benchmark(bgrid) # it works!
+
+# bres$aggregate(c(msr('regr.mean_pinball'), msr('regr.rmse')))
 
 
 # I think the plan is that we run this benchmark over all the models
 
+ngr = LearnerRegrNGR$new()
 
+rangerdist = LearnerRegrRangerDist$new()
+# add ranger default search space
+rangerdist$param_set$values =
+  mlr3misc::insert_named(rangerdist$param_set$values, lts('regr.ranger.default')$values)
+rangerdist_at = auto_tuner(
+    tuner = tnr("random_search"),
+    learner = rangerdist, 
+    resampling = rsmp('block_cv'),
+    measure = msr('regr.crps'),
+    term_evals = 10
+)
+
+drf = LearnerRegrDrf$new()
+rfgls = LearnerRegrRfgls$new()
+rfgls$param_set$set_values(param_estimate = TRUE, ntree = 50, mtry = 3, nthsize = 10)
+# rfgls specifically takes more time, so worth running in parallel
+
+future::plan('multicore', workers = 3)
+
+bgrid = benchmark_grid(
+    tasks = forecast_tv_tasks,
+    learners = c(ngr, drf),
+    resamplings = rsmp('forecast_holdout')
+)
+bres = benchmark(bgrid, store_models = TRUE)
+bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+
+future::plan('sequential') # for debugging
+bgrid = benchmark_grid(
+    tasks = forecast_tv_tasks[6],
+    learners = rfgls,
+    resamplings = rsmp('forecast_holdout')
+)
+system.time(bres0 <- benchmark(bgrid, store_models = TRUE))
+# bres0 = benchmark(bgrid, store_models = TRUE)
+bres0$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+
+# get hyperparameter tuning results
+extract_inner_tuning_results(bres)
+
+# slightly different for GEFS benchmarking
+gefs_tester = LearnerRegrIdent$new()
+bgrid = benchmark_grid(
+    tasks = gefs_tasks,
+    learners = gefs_tester,
+    resamplings = rsmp('forecast_holdout')
+)
+bres_gefs = benchmark(bgrid)
+bres_gefs$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+
+
+all_res = rbind(
+    bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse'))),
+    bres_gefs$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+)
+
+all_res %>%
+  subset(select = c(task_id, learner_id, regr.crps)) %>%
+  reshape(direction = 'wide', idvar = 'task_id', timevar = 'learner_id')
+
+
+# rfgls = LearnerRegrRangerDist$new()
+
+# bgrid = benchmark_grid(
+#     tasks = forecast_tv_tasks[5:6],
+#     learners = rfgls,
+#     resamplings = rsmp('forecast_holdout')
+# )
+# bres2 = benchmark(bgrid)
+
+# rfgls$train(forecast_tv_tasks[[1]])
 
 
 # # train the model
 # qrf$train(forecast_tv, split$train_set)
 # prediction = qrf$predict(forecast_tv, split$test_set)
+
+library(ggplot2)
+# library(tidyr)
+
+gefs_baseline = all_res %>%
+  subset(learner_id == 'regr.ident') %>%
+  transform(days_ahead = as.integer(substr(task_id, 13, 13))) %>%
+  with(setNames(regr.crps, days_ahead))
+
+all_res %>%
+  transform(days_ahead = as.integer(substr(task_id, 13, 13))) %>%
+  ggplot(aes(x = days_ahead, y = regr.crps, color = learner_id)) +
+  geom_line()
+
+all_res %>%
+  transform(days_ahead = as.integer(substr(task_id, 13, 13))) %>%
+  transform(crps = regr.crps / (gefs_baseline[as.character(days_ahead)])) %>%
+  ggplot(aes(x = days_ahead, y = crps, color = learner_id)) +
+  geom_line()
+
+comparison_plot = function(metrics, nwp_acc) {
+  nwp_acc_long = nwp_acc %>%
+    transform(days_ahead = day, model = 'GEFS') %>%
+    subset(select = -day) %>%
+    gather('metric', 'value', -c(model, days_ahead))
+  names(metrics) = sub('regr\\.', '', names(metrics))
+  names(metrics)[2:3] = toupper(names(metrics)[2:3])
+  metrics_long = metrics %>%
+    transform(model = 'Random forest') %>%
+    gather('metric', 'value', -c(model, days_ahead))
+
+  rbind(nwp_acc_long, metrics_long) %>%
+    ggplot(aes(x = days_ahead, y = value, color = model)) + geom_line() + facet_wrap( ~ metric)
+}
+
+comparison_plot(rf_all_results$metrics, nwp_acc)
 
 
 
