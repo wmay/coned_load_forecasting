@@ -98,17 +98,19 @@ LearnerRegrDrf = R6::R6Class(
   public = list(
     initialize = function() {
       param_set = paradox::ps(
-        cp             = paradox::p_dbl(0, 1, default = 0.01, tags = "train"),
-        maxcompete     = paradox::p_int(0L, default = 4L, tags = "train"),
-        maxdepth       = paradox::p_int(1L, 30L, default = 30L, tags = "train"),
-        maxsurrogate   = paradox::p_int(0L, default = 5L, tags = "train"),
-        minbucket      = paradox::p_int(1L, tags = "train"),
-        minsplit       = paradox::p_int(1L, default = 20L, tags = "train"),
-        surrogatestyle = paradox::p_int(0L, 1L, default = 0L, tags = "train"),
-        usesurrogate   = paradox::p_int(0L, 2L, default = 2L, tags = "train"),
-        xval           = paradox::p_int(0L, default = 10L, tags = "train")
+          num.trees                    = paradox::p_int(1L, default = 500L, tags = c("train", "predict", "hotstart")),
+          # num.features ?
+          sample.fraction              = paradox::p_dbl(0L, 1L, tags = "train"),
+          mtry                         = paradox::p_int(lower = 1L, special_vals = list(NULL), tags = "train"),
+          mtry.ratio                   = paradox::p_dbl(lower = 0, upper = 1, tags = "train"),
+          min.node.size                = paradox::p_int(1L, default = 15L, special_vals = list(NULL), tags = "train"),
+          honesty                      = paradox::p_lgl(default = TRUE, tags = "train"),
+          honesty.fraction             = paradox::p_dbl(lower = 0, upper = 1, default = .5, tags = "train"),
+          honesty.prune.leaves         = paradox::p_lgl(default = TRUE, tags = "train"),
+          alpha                        = paradox::p_dbl(lower = 0, upper = .25, default = .05, tags = "train"),
+          ci.group.size                = paradox::p_int(default = 2L, tags = "train"),
+          num.threads                  = paradox::p_int(lower = 1L, special_vals = list(NULL), tags = "train")
       )
-      # param_set$set_values(xval = 10L)
       super$initialize(
         id = "regr.drf",
         feature_types = c("logical", "integer", "numeric", "factor", "ordered"),
@@ -123,6 +125,7 @@ LearnerRegrDrf = R6::R6Class(
   private = list(
     .train = function(task) {
       pv = self$param_set$get_values(tags = "train")
+      pv = mlr3learners:::convert_ratio(pv, "mtry", "mtry.ratio", length(task$feature_names))
       if ("weights" %in% task$properties) {
         pv$sample.weights = task$weights$weight
       }
