@@ -66,9 +66,9 @@ library(scoringRules)
 library(beepr)
 source('R/load_data.R')
 source('R/coned_tv.R')
-# block CV, mean pinball loss, etc.
-source('R/mlr3_additions.R')
+source('R/mlr3_additions.R') # block CV, mean pinball loss, etc.
 source('R/mlr3_distr.R')
+source('R/forecast_dataset.R')
 
 # get_effective_temp = function(x) {
 #   drywet = with(x, dry_wet_ave(tair, relh / 100, pres * 100))
@@ -188,64 +188,42 @@ make_predictor_dataset2 = function(nc, init, lon, lat, days_ahead = 1) {
     merge(eff_tmp, all.x = TRUE)
 }
 
-make_nwp_tv_dataset = function(nc, lon, lat, days_ahead = 2) {
-  # when read by `read_mdim` time values are read as dates despite having a time
-  # as well
-  dates = attr(nc, 'dimensions')$time$values + days_ahead
-  # days ahead starts at 2 in the array
-  if (days_ahead < 2) stop('TV only available starting day 2')
-  tv = nc[['eff_temp']][lon, lat,, days_ahead - 1, ] %>%
-    colMeans(na.rm = TRUE)
-  data.frame(day = dates, tv = tv)
-}
+# # based on Rasp+Lerch 2018,
+# # https://github.com/slerch/ppnn/blob/7af9af3cfb754b8b6da54d2fe5d917cd54e32b9d/nn_postprocessing/nn_src/losses.py#L14
+# crps_loss = function(y_true, y_pred) {
+#   # Split y_pred into mean and std dev
+#   mu = y_pred[, 1]
+#   sigma = op_abs(y_pred[, 2])
+#   # Calculate the standardized difference
+#   z = (y_true[, 1] - mu) / sigma
+#   # Calculate the CDF and PDF of the standard normal distribution
+#   pdf = op_exp(-op_square(z) / 2) / sqrt(2 * pi)
+#   cdf = 0.5 * (1 + op_erf(z / sqrt(2)))
+#   # Calculate the CRPS components
+#   term1 = z * (2 * cdf - 1)
+#   term2 = 2 * pdf - 1 / sqrt(pi)
+#   crps = sigma * (term1 + term2)
+#   return(op_mean(crps))
+# }
 
-get_gefs_samples = function(nc, lon = 3, lat = 4, days_ahead = 2) {
-  # when read by `read_mdim` time values are read as dates despite having a time
-  # as well
-  dates = attr(nc, 'dimensions')$time$values + days_ahead
-  # days ahead starts at 2 in the array
-  if (days_ahead < 2) stop('TV only available starting day 2')
-  nc[['eff_temp']][lon, lat,, days_ahead - 1, ]
-  tv = nc[['eff_temp']][lon, lat,, days_ahead - 1, ]
-  list(day = dates, tv = t(tv))
-}
-
-# based on Rasp+Lerch 2018,
-# https://github.com/slerch/ppnn/blob/7af9af3cfb754b8b6da54d2fe5d917cd54e32b9d/nn_postprocessing/nn_src/losses.py#L14
-crps_loss = function(y_true, y_pred) {
-  # Split y_pred into mean and std dev
-  mu = y_pred[, 1]
-  sigma = op_abs(y_pred[, 2])
-  # Calculate the standardized difference
-  z = (y_true[, 1] - mu) / sigma
-  # Calculate the CDF and PDF of the standard normal distribution
-  pdf = op_exp(-op_square(z) / 2) / sqrt(2 * pi)
-  cdf = 0.5 * (1 + op_erf(z / sqrt(2)))
-  # Calculate the CRPS components
-  term1 = z * (2 * cdf - 1)
-  term2 = 2 * pdf - 1 / sqrt(pi)
-  crps = sigma * (term1 + term2)
-  return(op_mean(crps))
-}
-
-# Based on Rasp+Lerch 2018:
-# https://github.com/slerch/ppnn/blob/7af9af3cfb754b8b6da54d2fe5d917cd54e32b9d/nn_postprocessing/nn_src/losses.py#L14
-# however here I'm using a log link for sigma
-crps_loss2 = function(y_true, y_pred) {
-  # Split y_pred into mean and std dev
-  mu = y_pred[, 1]
-  sigma = op_exp(y_pred[, 2])
-  # Calculate the standardized difference
-  z = (y_true[, 1] - mu) / sigma
-  # Calculate the CDF and PDF of the standard normal distribution
-  pdf = op_exp(-op_square(z) / 2) / sqrt(2 * pi)
-  cdf = 0.5 * (1 + op_erf(z / sqrt(2)))
-  # Calculate the CRPS components
-  term1 = z * (2 * cdf - 1)
-  term2 = 2 * pdf - 1 / sqrt(pi)
-  crps = sigma * (term1 + term2)
-  return(op_mean(crps))
-}
+# # Based on Rasp+Lerch 2018:
+# # https://github.com/slerch/ppnn/blob/7af9af3cfb754b8b6da54d2fe5d917cd54e32b9d/nn_postprocessing/nn_src/losses.py#L14
+# # however here I'm using a log link for sigma
+# crps_loss2 = function(y_true, y_pred) {
+#   # Split y_pred into mean and std dev
+#   mu = y_pred[, 1]
+#   sigma = op_exp(y_pred[, 2])
+#   # Calculate the standardized difference
+#   z = (y_true[, 1] - mu) / sigma
+#   # Calculate the CDF and PDF of the standard normal distribution
+#   pdf = op_exp(-op_square(z) / 2) / sqrt(2 * pi)
+#   cdf = 0.5 * (1 + op_erf(z / sqrt(2)))
+#   # Calculate the CRPS components
+#   term1 = z * (2 * cdf - 1)
+#   term2 = 2 * pdf - 1 / sqrt(pi)
+#   crps = sigma * (term1 + term2)
+#   return(op_mean(crps))
+# }
 
 prepare_dataset = function(days_ahead = 1) {
   x = make_predictor_dataset2(gefs, 12, 3, 4, days_ahead = days_ahead)
@@ -357,15 +335,15 @@ system_eff_tmp = get_combined_eff_tmp(system_tv_sites)
 # only 400 of these, clearly I should collect more weather data for this step
 
 
-# get baseline accuracies-- must make sure to use exact same testing data!!
-nwp_acc = sapply(2:7, function(i) {
-  tv_fc_err = prepare_multiday_dataset(i)$y$tv_fc_err
-  n_train = ceiling(length(tv_fc_err) * 4 / 5)
-  test_data = tail(tv_fc_err, -n_train)
-  c(day = i, MAE = mean(abs(test_data)), RMSE = sqrt(mean(test_data^2)))
-}) %>%
-  t %>%
-  as.data.frame
+# # get baseline accuracies-- must make sure to use exact same testing data!!
+# nwp_acc = sapply(2:7, function(i) {
+#   tv_fc_err = prepare_multiday_dataset(i)$y$tv_fc_err
+#   n_train = ceiling(length(tv_fc_err) * 4 / 5)
+#   test_data = tail(tv_fc_err, -n_train)
+#   c(day = i, MAE = mean(abs(test_data)), RMSE = sqrt(mean(test_data^2)))
+# }) %>%
+#   t %>%
+#   as.data.frame
 
 # old (calculated from mean TMP and DWP)
 #   day      MAE     RMSE
@@ -401,116 +379,13 @@ library(mlr3temporal)
 # see notes in `?benchmark` and `?mlr_tuners_random_search`
 lgr::get_logger("mlr3")$set_threshold("warn")
 lgr::get_logger("bbotk")$set_threshold("warn")
-
-# A model that uses the predictors as the prediction. Useful for benchmarking
-# NWP models
-LearnerRegrIdent = R6::R6Class(
-  "LearnerRegrIdentity",
-  inherit = LearnerRegr,
-  public = list(
-    initialize = function() {
-      super$initialize(
-        id = "regr.ident",
-        feature_types = c("logical", "integer", "numeric", "factor", "ordered"),
-        predict_types = "distr",
-        packages = character(),
-        properties = c("weights", "missings"),
-        label = "Identity"
-      )
-    }
-  ),
-  private = list(
-      .train = function(task) {
-        TRUE # no model needed
-      },
-      .predict = function(task) {
-        samples = task$data()
-        distlist = split(samples, 1:nrow(samples)) %>%
-          lapply(function(x) distr6::Empirical$new(samples = x))
-        distrs = distr6::VectorDistribution$new(distlist = distlist)
-        list(distr = distrs)
-      }
-  )
-)
-
-# distributional regression with ranger
-LearnerRegrRangerDist = R6::R6Class(
-  "LearnerRegrRangerDist",
-  inherit = LearnerRegr,
-  public = list(
-    initialize = function() {
-      ps = ps(
-          always.split.variables       = paradox::p_uty(tags = "train"),
-          holdout                      = paradox::p_lgl(default = FALSE, tags = "train"),
-          importance                   = paradox::p_fct(c("none", "impurity", "impurity_corrected", "permutation"), tags = "train"),
-          keep.inbag                   = paradox::p_lgl(default = FALSE, tags = "train"),
-          max.depth                    = paradox::p_int(default = NULL, lower = 1L, special_vals = list(NULL), tags = "train"),
-          min.bucket                   = paradox::p_int(1L, default = 1L, tags = "train"),
-          min.node.size                = paradox::p_int(1L, default = 5L, special_vals = list(NULL), tags = "train"),
-          mtry                         = paradox::p_int(lower = 1L, special_vals = list(NULL), tags = "train"),
-          mtry.ratio                   = paradox::p_dbl(lower = 0, upper = 1, tags = "train"),
-          na.action                    = paradox::p_fct(c("na.learn", "na.omit", "na.fail"), default = "na.learn", tags = "train"),
-          node.stats                   = paradox::p_lgl(default = FALSE, tags = "train"),
-          num.random.splits            = paradox::p_int(1L, default = 1L, tags = "train", depends = quote(splitrule == "extratrees")),
-          num.threads                  = paradox::p_int(1L, default = 1L, tags = c("train", "predict", "threads")),
-          num.trees                    = paradox::p_int(1L, default = 500L, tags = c("train", "predict", "hotstart")),
-          oob.error                    = paradox::p_lgl(default = TRUE, tags = "train"),
-          poisson.tau                  = paradox::p_dbl(default = 1, tags = "train", depends = quote(splitrule == "poisson")),
-          regularization.factor        = paradox::p_uty(default = 1, tags = "train"),
-          regularization.usedepth      = paradox::p_lgl(default = FALSE, tags = "train"),
-          replace                      = paradox::p_lgl(default = TRUE, tags = "train"),
-          respect.unordered.factors    = paradox::p_fct(c("ignore", "order", "partition"), tags = "train"),
-          sample.fraction              = paradox::p_dbl(0L, 1L, tags = "train"),
-          save.memory                  = paradox::p_lgl(default = FALSE, tags = "train"),
-          scale.permutation.importance = paradox::p_lgl(default = FALSE, tags = "train", depends = quote(importance == "permutation")),
-          se.method                    = paradox::p_fct(c("jack", "infjack"), default = "infjack", tags = "predict"), # FIXME: only works if predict_type == "se". How to set dependency?
-          seed                         = paradox::p_int(default = NULL, special_vals = list(NULL), tags = c("train", "predict")),
-          split.select.weights         = paradox::p_uty(default = NULL, tags = "train"),
-          splitrule                    = paradox::p_fct(c("variance", "extratrees", "maxstat", "beta", "poisson"), default = "variance", tags = "train"),
-          verbose                      = paradox::p_lgl(default = TRUE, tags = c("train", "predict")),
-          write.forest                 = paradox::p_lgl(default = TRUE, tags = "train")
-      )
-      ps$set_values(num.threads = 1L)
-      super$initialize(
-        id = "regr.rangerdist",
-        feature_types = c("logical", "integer", "numeric", "factor", "ordered"),
-        predict_types = "distr",
-        packages = "ranger",
-        param_set = ps,
-        properties = c("weights", "missings"),
-        label = "Non-homogeneous Gaussian Regression"
-      )
-    }
-  ),
-  private = list(
-    .train = function(task) {
-      pv = self$param_set$get_values(tags = "train")
-      pv = mlr3learners:::convert_ratio(pv, "mtry", "mtry.ratio", length(task$feature_names))
-      if ("weights" %in% task$properties) {
-        pv$case.weights = task$weights$weight
-      }
-      mlr3misc::invoke(
-          ranger::ranger,
-          formula = task$formula(),
-          data = task$data(),
-          quantreg = TRUE,
-          .args = pv
-      )
-    },
-    .predict = function(task) {
-      pv = self$param_set$get_values(tags = "predict")
-      newdata = task$data(cols = task$feature_names)
-      pred = predict(self$model, newdata, type = "quantiles",
-                     what = function(x) c(mean(x), sd(x)))
-      # need to wrap in a `VectorDistribution` (see `LearnerRegr`)
-      params = as.data.frame(pred$predictions)
-      names(params) = c('mean', 'sd')
-      distrs = distr6::VectorDistribution$new(distribution = "Normal",
-                                              params = params)
-      list(distr = distrs)
-    }
-  )
-)
+# lgr::get_logger("mlr3")$set_threshold("debug")
+# lgr::get_logger("bbotk")$set_threshold("debug")
+# lgr::get_logger()$set_threshold("debug")
+# lgr::get_logger("mlr3")$set_threshold("trace")
+# lgr::get_logger("bbotk")$set_threshold("trace")
+# lgr::get_logger()$set_threshold("trace")
+# library(lgr)
 
 # RandomforestGLS
 LearnerRegrRfgls = R6::R6Class(
@@ -524,8 +399,11 @@ LearnerRegrRfgls = R6::R6Class(
           mtry                = paradox::p_int(lower = 1L, special_vals = list(NULL), tags = "train"),
           mtry.ratio          = paradox::p_dbl(lower = 0, upper = 1, tags = "train"),
           ntree               = paradox::p_int(1L, default = 500L, tags = c("train", "predict", "hotstart")),
-          param_estimate      = paradox::p_lgl(default = FALSE, tags = c("train", "predict")),
-          verbose             = paradox::p_lgl(default = TRUE, tags = c("train", "predict"))
+          h                   = paradox::p_int(1L, default = 1L, tags = "train"),
+          lags                = paradox::p_int(0L, default = 1L, tags = "train"),
+          # lag_params          = paradox::p_int(1L, default = 1L, tags = "train"),
+          param_estimate      = paradox::p_lgl(default = FALSE, tags = "train"),
+          verbose             = paradox::p_lgl(default = FALSE, tags = c("train", "predict"))
       )
       # param_set$set_values(xval = 10L)
       super$initialize(
@@ -534,7 +412,7 @@ LearnerRegrRfgls = R6::R6Class(
         predict_types = "distr",
         packages = "RandomForestsGLS",
         param_set = param_set,
-        properties = c("weights", "missings"),
+        properties = c("missings"),
         label = "Non-homogeneous Gaussian Regression"
       )
     }
@@ -543,9 +421,8 @@ LearnerRegrRfgls = R6::R6Class(
     .train = function(task) {
       pv = self$param_set$get_values(tags = "train")
       pv = mlr3learners:::convert_ratio(pv, "mtry", "mtry.ratio", length(task$feature_names))
-      if ("weights" %in% task$properties) {
-        pv$sample.weights = task$weights$weight
-      }
+      pv$lag_params = rep(.5, pv$lags)
+      pv$lags = NULL
       # RFGLS_estimate_timeseries(y, X, Xtest = NULL, nrnodes = NULL,
       #                           nthsize = 20, mtry = 1,
       #                           pinv_choice = 1, n_omp = 1,
@@ -565,8 +442,21 @@ LearnerRegrRfgls = R6::R6Class(
       newdata = task$data(cols = task$feature_names)
       pred = RandomForestsGLS::RFGLS_predict(self$model, Xtest = newdata)
       # get mean and sd from matrix of individual tree responses
-      means = rowMeans(pred$predicted_matrix)
-      sds = apply(pred$predicted_matrix, 1, sd)
+      means = rowMeans(pred$predicted_matrix, na.rm = TRUE)
+      sds = apply(pred$predicted_matrix, 1, sd, na.rm = TRUE)
+      # why do I sometimes get NA values for predictions?
+      if (any(is.na(pred$predicted_matrix))) {
+        na_tab = table(is.na(pred$predicted_matrix))
+        na_tab_txt = paste(na_tab[1], 'of', na_tab[2])
+        train_params = self$param_set$get_values(tags = "train")
+        param_txt = paste(capture.output(print(train_params)), collapse=' ')
+        warning_txt = paste0('Prediction includes NA values (', na_tab_txt,
+                             '). Parameters: ', param_txt)
+        warning(warning_txt)
+        # print(table(is.na(pred$predicted_matrix)))
+        # print(self$param_set)
+        # stop('NA values returned in prediction')
+      }
       # need to wrap in a `VectorDistribution` (see `LearnerRegr`)
       params = data.frame(mean = means, sd = sds)
       distrs = distr6::VectorDistribution$new(distribution = "Normal",
@@ -666,35 +556,149 @@ rangerdist_at = auto_tuner(
 )
 
 drf = LearnerRegrDrf$new()
-rfgls = LearnerRegrRfgls$new()
-rfgls$param_set$set_values(param_estimate = TRUE, ntree = 50, mtry = 3, nthsize = 10)
+# drf hypertuning should be similar to ranger and grf. See
+# `lts('regr.ranger.default')` and
+# https://grf-labs.github.io/grf/REFERENCE.html#parameter-tuning
+drf$param_set$set_values(num.trees = to_tune(1, 2000),
+                         sample.fraction = to_tune(0.1, 1),
+                         mtry.ratio = to_tune(0, 1),
+                         honesty.fraction = to_tune(.5, .8),
+                         honesty.prune.leaves = to_tune(),
+                         ci.group.size = 1,
+                         num.threads = 1)
+drf_at = auto_tuner(
+    tuner = tnr("random_search"),
+    learner = drf, 
+    resampling = rsmp('block_cv'),
+    measure = msr('regr.crps'),
+    term_evals = 10
+)
+system.time(drf_at$train(forecast_tv_tasks[[6]]))
+
+# Ignoring rfgls for now because I'm not calculating the prediction statistics
+# correctly, nor is there an easy way to do it
+# rfgls = LearnerRegrRfgls$new()
+# rfgls$param_set$set_values(param_estimate = TRUE, ntree = 100, mtry = 3, nthsize = 16, h = 1, lags = 1)
+# rfgls$param_set$set_values(param_estimate = TRUE, mtry.ratio = to_tune(0, 1),
+#                            ntree = to_tune(1, 500), nthsize = to_tune(8, 20),
+#                            h = 1, lags = to_tune(1, 2))
+# rfgls_at = auto_tuner(
+#     tuner = tnr("random_search"),
+#     learner = rfgls, 
+#     resampling = rsmp('block_cv', folds = 3),
+#     measure = msr('regr.crps'),
+#     term_evals = 5
+# )
+
+
+
+
 # rfgls specifically takes more time, so worth running in parallel
 
-future::plan('multicore', workers = 3)
+# to_tune
+
+# # does the lag parameter estimation even work?
+# y = as.matrix(forecast_tv_tasks[[6]]$data(cols = forecast_tv_tasks[[6]]$target_names))
+# X = as.matrix(forecast_tv_tasks[[6]]$data(cols = forecast_tv_tasks[[6]]$feature_names))
+# sp <- randomForest(X, y,  nodesize = 20)
+# sp_input_est <- predict(sp, X)
+# rf_residual <- y - sp_input_est
+# plot(rf_residual, type = 'b')
+# acf(rf_residual)
+# pacf(rf_residual)
+# lag_params = c(.5, .1)
+# AR <- arima(rf_residual, order = c(length(lag_params),0, 0), include.mean = FALSE)
+# lag_params <- AR$coef
+# # yes
+
+system.time(rfgls$train(forecast_tv_tasks[[6]]))
+
+# # does the lag improve the fit?
+# rfgls0 = LearnerRegrRfgls$new()
+# rfgls0$id = 'regr.rfgls0'
+# rfgls0$param_set$set_values(param_estimate = TRUE, ntree = 50, mtry = 3, nthsize = 20, h = 1, lags = 0)
+# rfgls1 = LearnerRegrRfgls$new()
+# rfgls1$param_set$set_values(param_estimate = TRUE, ntree = 50, mtry = 3, nthsize = 20, h = 1, lags = 1)
+# future::plan('multicore', workers = 4)
+# bgrid = benchmark_grid(
+#     tasks = forecast_tv_tasks[[6]],
+#     learners = c(rfgls0, rfgls1),
+#     resamplings = rsmp('block_cv')
+# )
+# system.time(bres_rfgls <- benchmark(bgrid, store_models = TRUE))
+# bres_rfgls$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+# # the answer is no, but it varies with the resampling procedure, not a totally
+# # consistent result
+
+
+future::plan('multicore', workers = 4)
+# future::plan("multisession", workers = 4)
+
+# run the inner loop in parallel and the outer loop sequentially
+future::plan(list("sequential", "multisession"), workers = 4)
+# future::plan("sequential")
 
 bgrid = benchmark_grid(
     tasks = forecast_tv_tasks,
-    learners = c(ngr, drf),
+    # learners = rfgls_at,
+    learners = c(ngr, rangerdist_at, drf_at),
     resamplings = rsmp('forecast_holdout')
 )
-bres = benchmark(bgrid, store_models = TRUE)
+system.time(bres <- progressr::with_progress(benchmark(bgrid)))
+# system.time(bres <- benchmark(bgrid, store_models = TRUE, encapsulate = 'try'))
 bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+saveRDS(bres, 'benchmarks.rds')
 
-future::plan('sequential') # for debugging
-bgrid = benchmark_grid(
-    tasks = forecast_tv_tasks[6],
-    learners = rfgls,
-    resamplings = rsmp('forecast_holdout')
-)
-system.time(bres0 <- benchmark(bgrid, store_models = TRUE))
-# bres0 = benchmark(bgrid, store_models = TRUE)
-bres0$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+# found it!-- small number (1?) of NaN in the prediction matrix
+
+#                id    class lower upper nlevels        default     value
+#            <char>   <char> <num> <num>   <num>         <list>    <list>
+# 1:        nrnodes ParamInt     1   Inf     Inf         [NULL]    [NULL]
+# 2:        nthsize ParamInt     1   Inf     Inf         [NULL]         8
+# 3:           mtry ParamInt     1   Inf     Inf <NoDefault[0]>    [NULL]
+# 4:     mtry.ratio ParamDbl     0     1     Inf <NoDefault[0]> 0.3185942
+# 5:          ntree ParamInt     1   Inf     Inf            500       314
+# 6:              h ParamInt     1   Inf     Inf              1         1
+# 7:           lags ParamInt     0   Inf     Inf              1         1
+# 8: param_estimate ParamLgl    NA    NA       2          FALSE      TRUE
+# 9:        verbose ParamLgl    NA    NA       2          FALSE    [NULL]
+
+# rfgls = LearnerRegrRfgls$new()
+# rfgls$param_set$set_values(param_estimate = TRUE, ntree = 314,
+#                            mtry.ratio = 0.3185942, nthsize = 8, h = 1, lags = 1)
+
+# system.time(rfgls$train(forecast_tv_tasks[[6]]))
+
+# blas library makes a huge difference here--
+# libblas: 2500 seconds
+# openblas: 840 seconds
+# mkl: 8500 seconds omfg
+
+# prediction = rfgls$predict(forecast_tv_tasks[[6]])
+
+# # rfgls$train(forecast_tv_tasks[[1]])
+
+# rfgls$param_set$set_values(param_estimate = TRUE, mtry.ratio = to_tune(0, 1),
+#                            ntree = to_tune(1, 500), nthsize = to_tune(8, 20),
+#                            h = 1, lags = to_tune(1, 2))
+
+
+# future::plan('sequential') # for debugging
+# bgrid = benchmark_grid(
+#     tasks = forecast_tv_tasks,
+#     learners = rfgls,
+#     resamplings = rsmp('forecast_holdout')
+# )
+# system.time(bres0 <- benchmark(bgrid, store_models = TRUE))
+# # bres0 = benchmark(bgrid, store_models = TRUE)
+# bres0$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 
 # get hyperparameter tuning results
 extract_inner_tuning_results(bres)
 
 # slightly different for GEFS benchmarking
 gefs_tester = LearnerRegrIdent$new()
+gefs_tester$id = 'GEFS'
 bgrid = benchmark_grid(
     tasks = gefs_tasks,
     learners = gefs_tester,
@@ -708,6 +712,7 @@ all_res = rbind(
     bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse'))),
     bres_gefs$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 )
+saveRDS(all_res, 'benchmarks.rds')
 
 all_res %>%
   subset(select = c(task_id, learner_id, regr.crps)) %>%
@@ -734,7 +739,7 @@ library(ggplot2)
 # library(tidyr)
 
 gefs_baseline = all_res %>%
-  subset(learner_id == 'regr.ident') %>%
+  subset(learner_id == 'GEFS') %>%
   transform(days_ahead = as.integer(substr(task_id, 13, 13))) %>%
   with(setNames(regr.crps, days_ahead))
 
