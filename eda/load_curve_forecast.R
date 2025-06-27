@@ -6,9 +6,11 @@
 library(magrittr)
 library(timeDate) # holidays
 library(mgcv)
+library(stars) # also requires ncmeta
 # library(mgcViz)
 source('R/load_data.R')
 source('R/coned_tv.R')
+source('R/forecast_dataset.R')
 
 station_obs = get_hourly_asos_data(7:21) %>%
   transform(stid = station, time = valid_hour) %>%
@@ -93,7 +95,18 @@ forecast_days = lapply(2021:2024, year_forecast_dates) %>%
   subset(. >= first_fit & . <= max(load_curve_dat$day) + 1)
 forecast_tvs = seq(50, 86)
 
-forecast_ses = sapply(forecast_days, function(x) {
+# forecast_ses = sapply(forecast_days, function(x) {
+#   #print(x)
+#   fit = try(get_fit_as_of(x))
+#   if (inherits(fit, 'try-error')) {
+#     return(rep(NA, length(forecast_tvs)))
+#   }
+#   newdata = data.frame(tv = forecast_tvs, nday = as.integer(x))
+#   pred = predict(fit$gam, newdata = newdata, se.fit = T)
+#   pred$se.fit
+# })
+
+gam_forecasts = sapply(forecast_days, function(x) {
   #print(x)
   fit = try(get_fit_as_of(x))
   if (inherits(fit, 'try-error')) {
@@ -101,8 +114,10 @@ forecast_ses = sapply(forecast_days, function(x) {
   }
   newdata = data.frame(tv = forecast_tvs, nday = as.integer(x))
   pred = predict(fit$gam, newdata = newdata, se.fit = T)
-  pred$se.fit
-})
+  cbind(fit = pred$fit, se.fit = pred$se.fit)
+}, simplify = 'array')
+
+forecast_ses = gam_forecasts[, 2, ]
 
 colnames(forecast_ses) = paste0('se.', as.character(forecast_days))
 
@@ -172,3 +187,36 @@ g3 = gamm(reading ~ s(tv) + s(doy) + s(nday) + s(tv, nday),
           data = load_curve_dat)
 
 plot(g2$gam, residuals = T, scheme = 2)
+
+
+# ok let's make the predictor dataset
+
+# strangely `read_mdim` works fine while `read_ncdf` messes up the coordinates
+# gefs_tv = read_ncdf('results/process_nwp_data/gefs_tv2.nc')
+gefs_tv = read_mdim('results/process_nwp_data/gefs_tv2.nc')
+# tv_fct = make_nwp_tv_dataset(gefs_tv, 3, 4, days_ahead = 2)
+tv_fct_list = lapply(2:7, function(x) make_nwp_tv_dataset(gefs_tv, 3, 4, x))
+
+get_gam_forecast = function(model_day, tv, days_ahead = 0) {
+  fit = try(get_fit_as_of(model_day))
+  n_tv = length(tv)
+  n_days = length(days_ahead)
+  if (n_tv > 1 && n_days > 1) stop('Only tv or days_ahead can have length > 1')
+  combine_fun = if (n_tv > 1 || n_days > 1) cbind else c
+  if (inherits(fit, 'try-error')) {
+    return(combine_fun(fit = rep(NA, n_tv), se.fit = rep(NA, n_tv)))
+  }
+  fct_days = model_day + days_ahead
+  newdata = data.frame(tv = tv, nday = as.integer(fct_days))
+  pred = predict(fit$gam, newdata = newdata, se.fit = T)
+  combine_fun(fit = pred$fit, se.fit = pred$se.fit)
+}
+
+gam_forecasts = sapply(forecast_days, function(x) {
+  new_tv = tv_fct$tv[match(x, tv_fct$day)]
+  get_gam_forecast(x, new_tv, days_ahead = 0:7)
+}, simplify = 'array')
+gam_forecasts = aperm(gam_forecasts, c(3, 2, 1))
+
+out = list(model_day = forecast_days, gam_forecasts)
+saveRDS(out, 'results/load_curve_forecast/gam_forecasts.rds')
