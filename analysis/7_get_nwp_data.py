@@ -217,7 +217,7 @@ class CollectionReader(NwpCollection):
                 arrs.append(arr)
             ds = xr.merge(arrs, combine_attrs='drop_conflicts')
             out_list.append(ds)
-        return xr.merge(out_list, combine_attrs='drop_conflicts')
+        return out_list
 
 
 # Some common variables
@@ -436,36 +436,22 @@ def get_file_name(c):
     return out + '.nc'
 
 
-# r1 = CollectionReader(runs_12utc, model='gefs', product='atmos.25',
-#                       fxx=gefs_fxx_fct, members=range(0, 31), extent=nyc_extent,
-#                       search=':TMP:2 m above ground:', save_dir='/mnt/nwpdownload')
-# ds1 = r1.delayed_ds()
-
-# # neat, let's try writing a netcdf file
-# ds1.to_netcdf('results/process_nwp_data/gefs_tv.nc')
-
 # https://stackoverflow.com/a/40818232
 comp = { 'zlib': True, 'complevel': 4 }
 # encoding = { var: comp for var in ds1.data_vars }
-# # When using the dask cluster, there seem to be contradictory expectations about
-# # where the netcdf is written. The only way this works is to wrap the whole
-# # function in `delayed`, so that every part of it runs on the remote cluster
-# delayed_obj = dask.delayed(ds1.to_netcdf)('/mnt/nwpdownload/gefs_tv2.nc',
-#                                           encoding=encoding)
-# delayed_obj.compute()
 
 from nwpdownload.xarray import merge_nwp_variables
 
+# write each collection to a netcdf file
 for c in gefs_collections:
-    # skip larger ones while testing
-    if len(c.members) > 2:
-        continue
     out_path = '/mnt/nwpdownload/' + get_file_name(c)
+    if out_path == '/mnt/nwpdownload/gefs_atmos0p25_fct_members.nc':
+        print('skipping TV collection')
+        continue
     print(f'writing to {out_path}')
-    # ds_list = c.open_datasets()
+    ds_list = c.open_datasets()
     # print(ds_list)
-    # ds_c = merge_nwp_variables(ds_list)
-    ds_c = c.open_datasets()
+    ds_c = merge_nwp_variables(ds_list)
     print(ds_c)
     encoding = { var: comp for var in ds_c.data_vars }
     # When using the dask cluster, there seem to be contradictory expectations
@@ -478,8 +464,12 @@ for c in gefs_collections:
 # # neat, let's try writing a netcdf file
 # ds1.to_netcdf('results/process_nwp_data/gefs_tv.nc')
     
-ds_test = xr.open_dataset('results/get_nwp_data/gefs_atmos0p25_fct.nc')
+# ds_test = xr.open_dataset('results/get_nwp_data/gefs_atmos0p5_fct.nc')
+# ds_test['u10'].mean()
+# ds_test.close()
 
+client.close()
+cluster.close()
 
 
 # second step: modify as needed
