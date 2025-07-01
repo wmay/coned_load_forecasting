@@ -5,6 +5,7 @@
 
 library(magrittr)
 library(timeDate) # holidays
+library(ggplot2)
 library(mgcv)
 library(stars) # also requires ncmeta
 # library(mgcViz)
@@ -201,7 +202,7 @@ get_gam_forecast = function(model_day, tv, days_ahead = 0) {
   fit = try(get_fit_as_of(model_day))
   n_tv = length(tv)
   n_days = length(days_ahead)
-  if (n_tv > 1 && n_days > 1) stop('Only tv or days_ahead can have length > 1')
+  # if (n_tv > 1 && n_days > 1) stop('Only tv or days_ahead can have length > 1')
   combine_fun = if (n_tv > 1 || n_days > 1) cbind else c
   if (inherits(fit, 'try-error')) {
     return(combine_fun(fit = rep(NA, n_tv), se.fit = rep(NA, n_tv)))
@@ -213,10 +214,33 @@ get_gam_forecast = function(model_day, tv, days_ahead = 0) {
 }
 
 gam_forecasts = sapply(forecast_days, function(x) {
-  new_tv = tv_fct$tv[match(x, tv_fct$day)]
-  get_gam_forecast(x, new_tv, days_ahead = 0:7)
+  valid_days = x + 2:7
+  new_tv = sapply(2:7, function(i) {
+    tv_fct = tv_fct_list[[i - 1]]
+    tv_fct$tv[match(x + i, tv_fct$day)]
+  })
+  out = get_gam_forecast(x, new_tv, days_ahead = 2:7)
+  # add the forecast error
+  obs_load = peaks$reading[match(valid_days, peaks$day)]
+  fct_err = obs_load - out[, 'fit']
+  cbind(out, err = fct_err, obs = obs_load)
 }, simplify = 'array')
-gam_forecasts = aperm(gam_forecasts, c(3, 2, 1))
+gam_forecasts = aperm(gam_forecasts, c(3, 1, 2))
 
-out = list(model_day = forecast_days, gam_forecasts)
+# quick check
+plot(gam_forecasts[, 1, 1], gam_forecasts[, 1, 4])
+plot(gam_forecasts[, 6, 1], gam_forecasts[, 6, 4])
+# strong relationship between GAM predictions and observed loads, as there
+# should be
+
+# let's look at the MAPE of the GAM for reference
+mae = function(obs, fct) mean(abs(obs - fct), na.rm = TRUE)
+mape = function(obs, fct) 100 * mean(abs((obs - fct) / obs), na.rm = TRUE)
+
+sapply(1:6, function(i) mape(gam_forecasts[, i, 1], gam_forecasts[, i, 4]))
+# [1] 7.072099 7.368438 7.638298 7.958399 8.517402 9.036653
+sapply(1:6, function(i) mae(gam_forecasts[, i, 1], gam_forecasts[, i, 4]))
+# [1] 609.0118 635.2708 661.4272 691.1363 741.0981 786.4698
+
+out = list(model_day = forecast_days, forecasts = gam_forecasts)
 saveRDS(out, 'results/load_curve_forecast/gam_forecasts.rds')

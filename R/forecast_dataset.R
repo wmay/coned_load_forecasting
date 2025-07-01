@@ -9,7 +9,9 @@ make_nwp_tv_dataset = function(nc, lon, lat, days_ahead = 2) {
   if (days_ahead < 2) stop('TV only available starting day 2')
   tv = nc[['eff_temp']][lon, lat,, days_ahead - 1, ] %>%
     colMeans(na.rm = TRUE)
-  data.frame(day = dates, tv = tv)
+  tv_sd = nc[['eff_temp']][lon, lat,, days_ahead - 1, ] %>%
+    apply(2, sd, na.rm = TRUE)
+  data.frame(day = dates, tv = tv, tv_sd = tv_sd)
 }
 
 # get a matrix of GEFS TV forecasts

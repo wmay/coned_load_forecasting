@@ -278,7 +278,8 @@ prepare_multiday_dataset = function(days_ahead = 2) {
             v.names = v.names) %>%
     # subset(select = -c(eff_temp.1, eff_temp.2, eff_temp.3)) %>%
     subset(select = -c(doy.1, doy.2, doy.3)) %>%
-    transform(TV = tv$tv[match(day, tv$day)]) %>%
+    transform(TV = tv$tv[match(day, tv$day)],
+              TV_sd = tv$tv_sd[match(day, tv$day)]) %>%
     transform(tv_fc_err = TV - system_tv$tv[match(day, system_tv$day)]) %>%
     subset(select = -c(eff_tmp_fc_err.1, eff_tmp_fc_err.2, eff_tmp_fc_err.3)) %>%
     na.omit %>%
@@ -573,7 +574,7 @@ drf_at = auto_tuner(
     measure = msr('regr.crps'),
     term_evals = 10
 )
-system.time(drf_at$train(forecast_tv_tasks[[6]]))
+# system.time(drf_at$train(forecast_tv_tasks[[6]]))
 
 # Ignoring rfgls for now because I'm not calculating the prediction statistics
 # correctly, nor is there an easy way to do it
@@ -611,7 +612,7 @@ system.time(drf_at$train(forecast_tv_tasks[[6]]))
 # lag_params <- AR$coef
 # # yes
 
-system.time(rfgls$train(forecast_tv_tasks[[6]]))
+# system.time(rfgls$train(forecast_tv_tasks[[6]]))
 
 # # does the lag improve the fit?
 # rfgls0 = LearnerRegrRfgls$new()
