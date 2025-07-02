@@ -263,7 +263,7 @@ def coned_eff_temp(db, dp):
 
 
 
-ds2 = xr.open_dataset('results/process_nwp_data/gefs_tv.nc')
+ds2 = xr.open_dataset('results/get_nwp_data/gefs_atmos0p25_fct_members.nc')
 
 # Somehow we got temperature values above 29000, which I hope is a misreading of
 # missing data.

@@ -445,9 +445,6 @@ from nwpdownload.xarray import merge_nwp_variables
 # write each collection to a netcdf file
 for c in gefs_collections:
     out_path = '/mnt/nwpdownload/' + get_file_name(c)
-    if out_path == '/mnt/nwpdownload/gefs_atmos0p25_fct_members.nc':
-        print('skipping TV collection')
-        continue
     print(f'writing to {out_path}')
     ds_list = c.open_datasets()
     # print(ds_list)
