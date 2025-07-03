@@ -223,6 +223,21 @@ prepare_multiday_dataset = function(days_ahead = 2, predict_error = TRUE) {
 # gefs_tv = read_ncdf('results/process_nwp_data/gefs_tv2.nc')
 gefs_tv = read_mdim('results/process_nwp_data/gefs_tv2.nc')
 
+# I don't know why this is such a pain to read
+# wrong dimensions:
+# read_ncdf('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
+# fails, but differently:
+# read_mdim('results/process_nwp_data/gefs_0p25_3day_wmean.nc', variable = "?")
+# works, but many warnings:
+# read_stars('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
+# this will fail if some variables have dimensions in a different order!!
+gefs_0p25_3day = read_mdim('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
+
+
+dim(gefs_0p25_3day['u10', 1, 1, , 1][['u10']])
+
+# st_extract for interpolation
+
 
 # set up the effective temp data
 data_wide = readRDS('results/load_vs_weather/tv_and_load.rds')

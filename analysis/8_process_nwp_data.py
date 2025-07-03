@@ -33,7 +33,6 @@ def coned_eff_temp(db, dp):
     return (dbf + wbf) / 2
 
 
-
 # We start by creating 4 datasets-- forecast and analysis, .5 and .25 degrees.
 # Then we will combine the forecast and analysis into a dataset ranging from -2
 # to +7 days, to cover all the needs of the load forecasting models.
@@ -122,12 +121,25 @@ gefs_0p5 = backfill_fct(gefs_0p5_fct, gefs_0p5_anl)
 # fixed in script 7
 # ---------------
 
+def get_3day_wmean(ds):
+    '''Get a 3-day weighted mean, using ConEd's TV weights.
+    '''
+    # get everything to line up
+    ds_m1 = ds.copy()
+    ds_m2 = ds.copy()
+    ds_m1['edt9pm_day'] = ds['edt9pm_day'] + 1
+    ds_m2['edt9pm_day'] = ds['edt9pm_day'] + 2
+    return ds * .7 + ds_m1 * .2 + ds_m2 * .1
+
 gefs_0p5_daily = get_daily_avg(gefs_0p5)
 gefs_0p5_daily.to_netcdf('results/process_nwp_data/gefs_0p5_daily.nc')
+gefs_0p5_3day_wmean = get_3day_wmean(gefs_0p5_daily)
+gefs_0p5_3day_wmean.to_netcdf('results/process_nwp_data/gefs_0p5_3day_wmean.nc')
 
 
 # now the same for 0p25
 gefs_0p25_fct = xr.open_dataset('results/get_nwp_data/gefs_atmos0p25_fct.nc').\
+    squeeze().\
     drop_vars('number')
 
 # organize the analysis
@@ -154,32 +166,12 @@ gefs_0p25 = backfill_fct(gefs_0p25_fct, gefs_0p25_anl)
 # now that we have all the 0p25 data, get daily averages
 gefs_0p25_daily = get_daily_avg(gefs_0p25)
 # gefs_0p25_daily.to_netcdf('results/process_nwp_data/gefs_0p25_daily.nc')
-# still need to add TV
+# still need to add effective temperature
 
 
 
-
-# for TV, get single value from analysis, and get mean of forecast members
-
-gefs_0p25_anl
-
-# the first time is 00z, but we want the difference from 12z to work with other
-# functions
-step = ((gefs_0p25_anl['time'] - gefs_0p25_anl['time'][0].values) /
-        np.timedelta64(1, 'h')).astype(int) - 12
-
-edt_coords = {'edt9pm_day': get_edt_day(step),
-              'edt_hour': get_edt_hour(step)}
-gefs_0p25_anl = gefs_0p25_anl.assign_coords(edt_coords)
-
-gefs_anl_eff_temp = coned_eff_temp(gefs_0p25_anl['t2m'], gefs_0p25_anl['d2m']).\
-    where((gefs_0p25_anl['edt_hour'] >= 9) &
-          (gefs_0p25_anl['edt_hour'] <= 21), drop=True).\
-    groupby('edt9pm_day').max(skipna=False).\
-    sel(edt9pm_day=slice(0, None)) # remove partial day at the beginning
-
-
-
+# No TV needed from analysis, because it's filled in with observation data. Only
+# need forecast TV values
 gefs_atmos0p25_fct_members = xr.open_dataset('results/get_nwp_data/gefs_atmos0p25_fct_members.nc')
 
 # Somehow we got temperature values above 29000, which I hope is a misreading of
@@ -189,9 +181,9 @@ gefs_atmos0p25_fct_members = xr.open_dataset('results/get_nwp_data/gefs_atmos0p2
 # ds2['d2m'].values = np.where(ds2['d2m'] > 500, np.nan, ds2['d2m'].values)
 # fixed!
 
-# how many missing values did we end up with?
-np.isnan(gefs_atmos0p25_fct_members['t2m']).any(['latitude', 'longitude']).sum()
-# 23 files-- almost none! Not even one set of ensemble members?
+# # how many missing values did we end up with?
+# np.isnan(gefs_atmos0p25_fct_members['t2m']).any(['latitude', 'longitude']).sum()
+# # 23 files-- almost none! Not even one set of ensemble members?
 
 edt_coords = {'edt9pm_day': get_edt_day(gefs_atmos0p25_fct_members['step']),
               'edt_hour': get_edt_hour(gefs_atmos0p25_fct_members['step'])}
@@ -216,40 +208,32 @@ gefs_fct_eff_temp = coned_eff_temp(gefs_atmos0p25_fct_members['t2m'],
 
 # np.isnan(gefs_fct_eff_temp).sum() / gefs_fct_eff_temp.size
 
-# now we want to backfill effective temp. just like before
-day_steps = ((gefs_fct_eff_temp.coords['time'] -
-              gefs_fct_eff_temp.coords['time'][0].values) /
-             np.timedelta64(1, 'D')).astype(int)
-
-day_steps_m1 = day_steps - 1
-day_steps_m1 = day_steps_m1[np.isin(day_steps_m1, gefs_anl_eff_temp['edt9pm_day'])]
-m1 = gefs_anl_eff_temp.sel(edt9pm_day=day_steps_m1).\
-    drop_vars('edt9pm_day').\
-    expand_dims({'edt9pm_day': [-1]})
-day_steps_m2 = day_steps - 2
-day_steps_m2 = day_steps_m2[np.isin(day_steps_m2, gefs_anl_eff_temp['edt9pm_day'])]
-m2 = gefs_anl_eff_temp.sel(edt9pm_day=day_steps_m2).\
-    drop_vars('edt9pm_day').\
-    expand_dims({'edt9pm_day': [-2]})
-
-gefs_eff_temp = xr.concat([m2, m1, gefs_fct_eff_temp], 'edt9pm_day')
-
-# gefs_0p25_daily['eff_temp'] = gefs_eff_temp
-
-
-
-# eff_temps.to_netcdf('results/process_nwp_data/gefs_eff_temps.nc')
+gefs_0p25_daily['eff_temp'] = gefs_fct_eff_temp.mean('number').transpose('edt9pm_day', 'time', 'latitude', 'longitude')
 gefs_0p25_daily.to_netcdf('results/process_nwp_data/gefs_0p25_daily.nc')
+gefs_0p25_3day_wmean = get_3day_wmean(gefs_0p25_daily)
+gefs_0p25_3day_wmean.to_netcdf('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
 
 
-gefs_tv = eff_temps.sel(edt9pm_day=slice(2, None)) * .7 +\
-    eff_temps.sel(edt9pm_day=slice(1, 6)).values * .2 +\
-    eff_temps.sel(edt9pm_day=slice(0, 5)).values * .1
+# Also need to do 3-day summaries here, to get the correct standard deviations
 
-gefs_tv.to_netcdf('results/process_nwp_data/gefs_tv2.nc')
+# pad with zeros to simplify the code
+padding = gefs_fct_eff_temp.isel(edt9pm_day=slice(None, 2)).copy()
+padding['edt9pm_day'] = padding['edt9pm_day'] - 2
+padding[:,:,:,:,:] = 0
 
-# let's see how much forecast variation there is, split by forecast day
-tv.std('number').mean(['time', 'latitude', 'longitude']).to_dataframe()
+gefs_eff_temp = xr.concat([padding, gefs_fct_eff_temp], 'edt9pm_day')
+
+gefs_tv_members = gefs_eff_temp.sel(edt9pm_day=slice(0, None)) * .7 +\
+    gefs_eff_temp.sel(edt9pm_day=slice(-1, 6)).values * .2 +\
+    gefs_eff_temp.sel(edt9pm_day=slice(None, 5)).values * .1
+gefs_tv_members = gefs_tv_members.rename('TV')
+
+gefs_tv = xr.merge([gefs_tv_members.mean('number'),
+                    gefs_tv_members.std('number').rename('TV_sd')])
+gefs_tv.to_netcdf('results/process_nwp_data/gefs_tv.nc')
+
+# # let's see how much forecast variation there is, split by forecast day
+# gefs_tv_members.std('number').mean(['time', 'latitude', 'longitude']).to_dataframe()
 #          eff_temp
 # est_day          
 # 2        1.347529
@@ -263,9 +247,3 @@ tv.std('number').mean(['time', 'latitude', 'longitude']).to_dataframe()
 # fig, axs = plt.subplots(ncols=6)
 # for i in range(2, 8):
 #     tv.sel(est_day=i).std('number').plot(ax=axs[i - 2])
-
-
-# for other variables, define days as starting 9pm (because that's the latest we
-# include for effective temperature) and just get the mean by day
-
-# function to convert netcdf file to daily netcdf file
