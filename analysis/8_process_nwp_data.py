@@ -75,11 +75,24 @@ def backfill_fct(fct, anl):
     pre_weather = xr.concat(pre_weathers, 'time')
     return xr.concat([pre_weather, fct], 'step')
 
+def get_edt_day(step):
+    '''Get day offset, with days going from 9pm-9pm EDT.
+    '''
+    # step 0 is 12UTC, -4 offset to EDT, +3 offset to shift to 9pm bounds
+    edt9pm_day = (12 - 4 + 3 + step) // 24
+    return edt9pm_day
+
+def get_edt_hour(step):
+    '''Get EDT hour from forecast step.
+    '''
+    # step 0 is 12UTC, -4 offset to EDT
+    edt_hour = ((12 - 4) + step) % 24
+    return edt_hour
+
 def get_daily_avg(ds):
     '''Get daily averages, with days going from 9pm-9pm EDT.
     '''
-    # step 0 is 12UTC, -4 offset to EDT, +3 offset to shift to 9pm bounds
-    edt9pm_day = (12 - 4 + 3 + ds['step']) // 24
+    edt9pm_day = get_edt_day(ds['step'])
     ds = ds.assign_coords({'edt9pm_day': edt9pm_day})
     return ds.groupby('edt9pm_day').mean().sel(edt9pm_day=slice(None, 7))
 
@@ -150,9 +163,24 @@ gefs_0p25_daily = get_daily_avg(gefs_0p25)
 
 gefs_0p25_anl
 
+# the first time is 00z, but we want the difference from 12z to work with other
+# functions
+step = ((gefs_0p25_anl['time'] - gefs_0p25_anl['time'][0].values) /
+        np.timedelta64(1, 'h')).astype(int) - 12
+
+edt_coords = {'edt9pm_day': get_edt_day(step),
+              'edt_hour': get_edt_hour(step)}
+gefs_0p25_anl = gefs_0p25_anl.assign_coords(edt_coords)
+
+gefs_anl_eff_temp = coned_eff_temp(gefs_0p25_anl['t2m'], gefs_0p25_anl['d2m']).\
+    where((gefs_0p25_anl['edt_hour'] >= 9) &
+          (gefs_0p25_anl['edt_hour'] <= 21), drop=True).\
+    groupby('edt9pm_day').max(skipna=False).\
+    sel(edt9pm_day=slice(0, None)) # remove partial day at the beginning
 
 
-ds2 = xr.open_dataset('results/get_nwp_data/gefs_atmos0p25_fct_members.nc')
+
+gefs_atmos0p25_fct_members = xr.open_dataset('results/get_nwp_data/gefs_atmos0p25_fct_members.nc')
 
 # Somehow we got temperature values above 29000, which I hope is a misreading of
 # missing data.
@@ -162,38 +190,63 @@ ds2 = xr.open_dataset('results/get_nwp_data/gefs_atmos0p25_fct_members.nc')
 # fixed!
 
 # how many missing values did we end up with?
-np.isnan(ds2['t2m']).any(['latitude', 'longitude']).sum()
+np.isnan(gefs_atmos0p25_fct_members['t2m']).any(['latitude', 'longitude']).sum()
 # 23 files-- almost none! Not even one set of ensemble members?
 
-# get the hour in EDT (forecasts start at UTC hour 12)
-est_hour = ((12 - 4) + ds2['step']) % 24
-ds2 = ds2.assign_coords({'est_hour': est_hour})
-est_day = ((12 - 4) + ds2['step']) // 24
-ds2 = ds2.assign_coords({'est_day': est_day})
+edt_coords = {'edt9pm_day': get_edt_day(gefs_atmos0p25_fct_members['step']),
+              'edt_hour': get_edt_hour(gefs_atmos0p25_fct_members['step'])}
+gefs_atmos0p25_fct_members = gefs_atmos0p25_fct_members.assign_coords(edt_coords)
 
-# what hours did missing data occur?
-missing_files = np.isnan(ds2['t2m']).any(['latitude', 'longitude'])
-missing_files.sum(['time', 'number']).\
-    set_index(step=['est_hour', 'est_day']).unstack().\
-    sel(est_hour=slice(9, 21)).sum('est_day').\
-    astype(int).to_dataframe()
-# we have 6 missing files between 9am and 9pm
+# # what hours did missing data occur?
+# missing_files = np.isnan(gefs_atmos0p25_fct_members['t2m']).any(['latitude', 'longitude'])
+# missing_files.sum(['time', 'number']).\
+#     set_index(step=['edt_hour', 'edt9pm_day']).unstack().\
+#     sel(edt_hour=slice(9, 21)).sum('edt9pm_day').\
+#     astype(int).to_dataframe()
+# # we have 6 missing files between 9am and 9pm
 
 # use only 9am to 9pm
-ds2 = ds2.where((ds2['est_hour'] >= 9) & (ds2['est_hour'] <= 21), drop=True)
+gefs_atmos0p25_fct_members = gefs_atmos0p25_fct_members.\
+    where((gefs_atmos0p25_fct_members['edt_hour'] >= 9) &
+          (gefs_atmos0p25_fct_members['edt_hour'] <= 21), drop=True)
 
-ds2['eff_temp'] = coned_eff_temp(ds2['t2m'], ds2['d2m'])
-eff_temps = ds2['eff_temp'].groupby('est_day').max(skipna=False)
+gefs_fct_eff_temp = coned_eff_temp(gefs_atmos0p25_fct_members['t2m'],
+                                   gefs_atmos0p25_fct_members['d2m']).\
+    groupby('edt9pm_day').max(skipna=False)
 
-np.isnan(eff_temps).sum() / eff_temps.size
+# np.isnan(gefs_fct_eff_temp).sum() / gefs_fct_eff_temp.size
 
-eff_temps.to_netcdf('results/process_nwp_data/gefs_eff_temps.nc')
+# now we want to backfill effective temp. just like before
+day_steps = ((gefs_fct_eff_temp.coords['time'] -
+              gefs_fct_eff_temp.coords['time'][0].values) /
+             np.timedelta64(1, 'D')).astype(int)
 
-tv = eff_temps.sel(est_day=slice(2, None)) * .7 +\
-    eff_temps.sel(est_day=slice(1, 6)).values * .2 +\
-    eff_temps.sel(est_day=slice(0, 5)).values * .1
+day_steps_m1 = day_steps - 1
+day_steps_m1 = day_steps_m1[np.isin(day_steps_m1, gefs_anl_eff_temp['edt9pm_day'])]
+m1 = gefs_anl_eff_temp.sel(edt9pm_day=day_steps_m1).\
+    drop_vars('edt9pm_day').\
+    expand_dims({'edt9pm_day': [-1]})
+day_steps_m2 = day_steps - 2
+day_steps_m2 = day_steps_m2[np.isin(day_steps_m2, gefs_anl_eff_temp['edt9pm_day'])]
+m2 = gefs_anl_eff_temp.sel(edt9pm_day=day_steps_m2).\
+    drop_vars('edt9pm_day').\
+    expand_dims({'edt9pm_day': [-2]})
 
-tv.to_netcdf('results/process_nwp_data/gefs_tv2.nc')
+gefs_eff_temp = xr.concat([m2, m1, gefs_fct_eff_temp], 'edt9pm_day')
+
+# gefs_0p25_daily['eff_temp'] = gefs_eff_temp
+
+
+
+# eff_temps.to_netcdf('results/process_nwp_data/gefs_eff_temps.nc')
+gefs_0p25_daily.to_netcdf('results/process_nwp_data/gefs_0p25_daily.nc')
+
+
+gefs_tv = eff_temps.sel(edt9pm_day=slice(2, None)) * .7 +\
+    eff_temps.sel(edt9pm_day=slice(1, 6)).values * .2 +\
+    eff_temps.sel(edt9pm_day=slice(0, 5)).values * .1
+
+gefs_tv.to_netcdf('results/process_nwp_data/gefs_tv2.nc')
 
 # let's see how much forecast variation there is, split by forecast day
 tv.std('number').mean(['time', 'latitude', 'longitude']).to_dataframe()
