@@ -184,7 +184,7 @@ prepare_multiday_dataset = function(days_ahead = 2, predict_error = TRUE) {
     cbind(day = gam_fct$model_day + days_ahead) %>%
     subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
   # gam_loads = data.frame(day = gam_fct$model_day + days_ahead)
-  tv = make_nwp_tv_dataset(gefs_tv, 3, 4, days_ahead = days_ahead)
+  tv = make_nwp_tv_dataset(gefs_tv2, 3, 4, days_ahead = days_ahead)
   out = d_list %>%
     lapply(function(x) with(x, cbind(x, y, tv_day, day))) %>%
     do.call(rbind, .) %>%
@@ -221,7 +221,7 @@ prepare_multiday_dataset = function(days_ahead = 2, predict_error = TRUE) {
 
 # strangely `read_mdim` works fine while `read_ncdf` messes up the coordinates
 # gefs_tv = read_ncdf('results/process_nwp_data/gefs_tv2.nc')
-gefs_tv = read_mdim('results/process_nwp_data/gefs_tv2.nc')
+gefs_tv2 = read_mdim('results/process_nwp_data/gefs_tv2.nc')
 
 # I don't know why this is such a pain to read
 # wrong dimensions:
@@ -232,9 +232,47 @@ gefs_tv = read_mdim('results/process_nwp_data/gefs_tv2.nc')
 # read_stars('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
 # this will fail if some variables have dimensions in a different order!!
 gefs_0p25_3day = read_mdim('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
-
+gefs_0p5_3day = read_mdim('results/process_nwp_data/gefs_0p5_3day_wmean.nc')
+gefs_tv = read_mdim('results/process_nwp_data/gefs_tv.nc')
 
 dim(gefs_0p25_3day['u10', 1, 1, , 1][['u10']])
+
+prepare_load_task = function(days_ahead = 2, predict_error = TRUE) {
+  # currently this only support days_ahead >= 2 due to missing GAM forecasts
+  gam_loads = gam_fct$forecasts[, days_ahead - 1, ] %>%
+    as.data.frame %>%
+    cbind(day = gam_fct$model_day + days_ahead) %>%
+    subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
+  names(gam_loads)[1:4] = paste0('load_', c('pred', 'se', 'err', 'obs'))
+  out_0p25 = gefs_0p25_3day %>%
+    lapply(function(x) x[1, 1,, days_ahead + 1]) %>%
+    as.data.frame %>%
+    subset(select = -eff_temp) %>% # 3-day eff_temp is same as TV
+    transform(day = attr(gefs_0p25_3day, 'dimensions')$time$values)
+  out_0p5 = gefs_0p5_3day %>%
+    lapply(function(x) x[1, 1,, days_ahead + 1]) %>%
+    as.data.frame %>%
+    transform(day = attr(gefs_0p5_3day, 'dimensions')$time$values)
+  out_tv = gefs_tv %>%
+    lapply(function(x) x[1, 1, days_ahead + 1, ]) %>%
+    as.data.frame %>%
+    transform(day = attr(gefs_tv, 'dimensions')$time$values)
+  out = merge(out_0p25, out_0p5, by = 'day') %>%
+    merge(out_tv, by = 'day') %>%
+    merge(gam_loads, by = 'day') %>%
+    transform(doy = as.POSIXlt(day)$yday) %>%
+    subset(select = -day) %>%
+    na.omit
+  if (predict_error) {
+    out$load_obs = NULL
+    id = paste0('Forecast TV ', days_ahead)
+    as_task_regr(out, 'load_err', id = id)
+  }
+}
+
+x0 = prepare_multiday_dataset(days_ahead = 2)
+
+x = prepare_load_task(days_ahead = 2)
 
 # st_extract for interpolation
 
@@ -278,18 +316,18 @@ system_eff_tmp = get_combined_eff_tmp(system_tv_sites)
 # out = list(model_day = forecast_days, gam_forecasts)
 gam_fct = readRDS('results/load_curve_forecast/gam_forecasts.rds')
 
-loads = read.csv('data/coned/Borough and System Data 2020-2024.csv') %>%
-  transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M'),
-            # some inconsistency, but various forms of 'False' mean data is fine
-            BAD = !startsWith(BAD, 'F')) %>%
-  subset(!is.na(DT) & !BAD)
-names(loads) = tolower(names(loads))
+# loads = read.csv('data/coned/Borough and System Data 2020-2024.csv') %>%
+#   transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M'),
+#             # some inconsistency, but various forms of 'False' mean data is fine
+#             BAD = !startsWith(BAD, 'F')) %>%
+#   subset(!is.na(DT) & !BAD)
+# names(loads) = tolower(names(loads))
 
-peaks = loads %>%
-  subset(borough == 'CECONY') %>%
-  transform(day = as.Date(dt, tz = 'EST5EDT')) %>%
-  aggregate(reading ~ day, ., max) %>%
-  subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
+# peaks = loads %>%
+#   subset(borough == 'CECONY') %>%
+#   transform(day = as.Date(dt, tz = 'EST5EDT')) %>%
+#   aggregate(reading ~ day, ., max) %>%
+#   subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
 
 # load_curve_dat = merge(peaks, system_tv) %>%
 #   subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024))) %>%
@@ -433,13 +471,26 @@ future::plan(list("sequential", "multicore"), workers = 4)
 
 bgrid = benchmark_grid(
     tasks = forecast_load_tasks,
-    # learners = ngr,
-    learners = c(ngr, rangerdist_at, drf_at),
+    learners = ngr,
+    # learners = c(ngr, rangerdist_at, drf_at),
     resamplings = rsmp('forecast_holdout')
 )
 system.time(bres <- progressr::with_progress(benchmark(bgrid)))
 bres$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
 saveRDS(bres, 'benchmarks.rds')
+
+# new tasks
+
+forecast_load_tasks2 = lapply(2:7, prepare_load_task)
+bgrid = benchmark_grid(
+    tasks = forecast_load_tasks2,
+    learners = ngr,
+    # learners = c(ngr, rangerdist_at, drf_at),
+    resamplings = rsmp('forecast_holdout')
+)
+system.time(bres2 <- progressr::with_progress(benchmark(bgrid)))
+bres2$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
+# these are significantly better
 
 
 # now we're going to try without using the GAM
