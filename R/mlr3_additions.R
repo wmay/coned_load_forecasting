@@ -1,6 +1,7 @@
 # extra classes for mlr3
 
 library(mlr3)
+library(mlr3pipelines)
 # library(R6)
 
 # CV using contiguous blocks rather than random folds
@@ -164,6 +165,51 @@ LearnerRegrRangerDist = R6::R6Class(
       distrs = distr6::VectorDistribution$new(distribution = "Normal",
                                               params = params)
       list(distr = distrs)
+    }
+  )
+)
+
+PipeOpSubtractColumn = R6::R6Class('PipeOpSubtractColumn',
+  inherit = mlr3pipelines::PipeOpTargetTrafo,
+  public = list(
+      initialize = function(id = 'subtract.column', param_vals = list()) {
+      ps = ps(
+          column = paradox::p_uty(tags = c("train", "predict"))
+      )
+      # param_vals = list(column = column)
+      # ps$values = list(trafo = identity, inverter = identity)
+      super$initialize(id = id, param_set = ps, param_vals = param_vals)
+    }
+  ),
+  private = list(
+    .transform = function(task, phase) {
+      new_target = task$data(cols = task$target_names) -
+        task$data(cols = self$param_set$values$column)
+      # if (!is.data.frame(new_target) && !is.matrix(new_target)) {
+      #   stopf("Hyperparameter 'trafo' must be a function returning a 'data.frame', 'data.table', or 'matrix', not '%s'.", class(new_target)[[1L]])
+      # }
+      task$cbind(new_target)
+      convert_task(task, target = colnames(new_target), drop_original_target = TRUE)
+    },
+    .train_invert = function(task) {
+      # return a predict_phase_state object (can be anything)
+      list(truth = task$truth(),
+           subtracted = task$data(cols = self$param_set$values$column))
+    },
+    .invert = function(prediction, predict_phase_state) {
+      type = prediction$task_type
+      # need to adjust the means of the predicted distributions
+      means = unlist(prediction$distr$getParameterValue('mean'))
+      means = means + predict_phase_state$subtracted[[1]]
+      sds = unlist(prediction$distr$getParameterValue('sd'))
+      # need to wrap in a `VectorDistribution` (see `LearnerRegr`)
+      params = data.frame(mean = means, sd = sds)
+      distrs = distr6::VectorDistribution$new(distribution = "Normal",
+                                              params = params)
+      new_pred = list(distr = distrs)
+      mlr3misc::invoke(get(mlr_reflections$task_types[type, mult = "first"]$prediction)$new,
+                       row_ids = prediction$row_ids,
+                       truth = predict_phase_state$truth, .args = new_pred)
     }
   )
 )

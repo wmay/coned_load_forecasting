@@ -163,65 +163,65 @@ average_3days = function(dat) {
   dat
 }
 
-# Just like for TV forecasting, but use GAM prediction error as the outcome and
-# add GAM outputs as predictors. Also only use business days
-prepare_multiday_dataset = function(days_ahead = 2, predict_error = TRUE) {
-  # x: make a predictor dataset for each day, then combine
-  d_list = lapply((days_ahead - 2):days_ahead, prepare_dataset)
-  # "day" starts off as the valid day for each forecast. Change it to TV day 3,
-  # that is, the last of the 3 days used to calculate TV
-  for (i in 1:2) d_list[[i]]$day = d_list[[i]]$day + (3 - i)
+# # Just like for TV forecasting, but use GAM prediction error as the outcome and
+# # add GAM outputs as predictors. Also only use business days
+# prepare_multiday_dataset = function(days_ahead = 2, predict_error = TRUE) {
+#   # x: make a predictor dataset for each day, then combine
+#   d_list = lapply((days_ahead - 2):days_ahead, prepare_dataset)
+#   # "day" starts off as the valid day for each forecast. Change it to TV day 3,
+#   # that is, the last of the 3 days used to calculate TV
+#   for (i in 1:2) d_list[[i]]$day = d_list[[i]]$day + (3 - i)
 
-  # # what was wrong with this?
-  # d_list = lapply(days_ahead:(days_ahead - 2), prepare_dataset)
-  # for (i in 2:3) d_list[[i]]$day = d_list[[i]]$day + (i - 1)
+#   # # what was wrong with this?
+#   # d_list = lapply(days_ahead:(days_ahead - 2), prepare_dataset)
+#   # for (i in 2:3) d_list[[i]]$day = d_list[[i]]$day + (i - 1)
   
-  # for (i in 1:3) d_list[[i]]$tv_day = i
-  for (i in 1:3) d_list[[i]]$tv_day = (4 - i)
-  v.names = with(d_list[[1]], c(names(x), names(y)))
-  gam_loads = gam_fct$forecasts[, days_ahead - 1, ] %>%
-    as.data.frame %>%
-    cbind(day = gam_fct$model_day + days_ahead) %>%
-    subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
-  # gam_loads = data.frame(day = gam_fct$model_day + days_ahead)
-  tv = make_nwp_tv_dataset(gefs_tv2, 3, 4, days_ahead = days_ahead)
-  out = d_list %>%
-    lapply(function(x) with(x, cbind(x, y, tv_day, day))) %>%
-    do.call(rbind, .) %>%
-    reshape(direction = "wide", idvar = 'day', timevar = "tv_day",
-            v.names = v.names) %>%
-    # subset(select = -c(eff_temp.1, eff_temp.2, eff_temp.3)) %>%
-    subset(select = -c(doy.1, doy.2, doy.3)) %>%
-    transform(TV = tv$tv[match(day, tv$day)],
-              TV_sd = tv$tv_sd[match(day, tv$day)],
-              load = gam_loads$fit[match(day, gam_loads$day)],
-              load_se = gam_loads$se.fit[match(day, gam_loads$day)],
-              load_err = gam_loads$err[match(day, gam_loads$day)],
-              load_obs = gam_loads$obs[match(day, gam_loads$day)]) %>%
-    # transform(tv_fc_err = TV - system_tv$tv[match(day, system_tv$day)]) %>%
-    subset(select = -c(eff_tmp_fc_err.1, eff_tmp_fc_err.2, eff_tmp_fc_err.3)) %>%
-    na.omit %>%
-    average_3days %>%
-    subset(select = -eff_temp)
+#   # for (i in 1:3) d_list[[i]]$tv_day = i
+#   for (i in 1:3) d_list[[i]]$tv_day = (4 - i)
+#   v.names = with(d_list[[1]], c(names(x), names(y)))
+#   gam_loads = gam_fct$forecasts[, days_ahead - 1, ] %>%
+#     as.data.frame %>%
+#     cbind(day = gam_fct$model_day + days_ahead) %>%
+#     subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
+#   # gam_loads = data.frame(day = gam_fct$model_day + days_ahead)
+#   tv = make_nwp_tv_dataset(gefs_tv2, 3, 4, days_ahead = days_ahead)
+#   out = d_list %>%
+#     lapply(function(x) with(x, cbind(x, y, tv_day, day))) %>%
+#     do.call(rbind, .) %>%
+#     reshape(direction = "wide", idvar = 'day', timevar = "tv_day",
+#             v.names = v.names) %>%
+#     # subset(select = -c(eff_temp.1, eff_temp.2, eff_temp.3)) %>%
+#     subset(select = -c(doy.1, doy.2, doy.3)) %>%
+#     transform(TV = tv$tv[match(day, tv$day)],
+#               TV_sd = tv$tv_sd[match(day, tv$day)],
+#               load = gam_loads$fit[match(day, gam_loads$day)],
+#               load_se = gam_loads$se.fit[match(day, gam_loads$day)],
+#               load_err = gam_loads$err[match(day, gam_loads$day)],
+#               load_obs = gam_loads$obs[match(day, gam_loads$day)]) %>%
+#     # transform(tv_fc_err = TV - system_tv$tv[match(day, system_tv$day)]) %>%
+#     subset(select = -c(eff_tmp_fc_err.1, eff_tmp_fc_err.2, eff_tmp_fc_err.3)) %>%
+#     na.omit %>%
+#     average_3days %>%
+#     subset(select = -eff_temp)
 
-  if (predict_error) {
-    x = subset(out, select = -c(day, load_err, load_obs))
-    y = subset(out, select = load_err)
-  } else {
-    # no GAM prediction in this case
-    x = subset(out, select = -c(day, load, load_se, load_err, load_obs))
-    y = subset(out, select = load_obs)
-  }
-  x$doy = as.POSIXlt(out$day)$yday
-  list(x = x, y = y, day = out$day)
-  # # y: get either TV, or the future portion of TV
-  # tv = system_tv[match(out$day, system_tv$day), 'tv']
-  # list(x = out, y = tv)
-}
+#   if (predict_error) {
+#     x = subset(out, select = -c(day, load_err, load_obs))
+#     y = subset(out, select = load_err)
+#   } else {
+#     # no GAM prediction in this case
+#     x = subset(out, select = -c(day, load, load_se, load_err, load_obs))
+#     y = subset(out, select = load_obs)
+#   }
+#   x$doy = as.POSIXlt(out$day)$yday
+#   list(x = x, y = y, day = out$day)
+#   # # y: get either TV, or the future portion of TV
+#   # tv = system_tv[match(out$day, system_tv$day), 'tv']
+#   # list(x = out, y = tv)
+# }
 
 # strangely `read_mdim` works fine while `read_ncdf` messes up the coordinates
 # gefs_tv = read_ncdf('results/process_nwp_data/gefs_tv2.nc')
-gefs_tv2 = read_mdim('results/process_nwp_data/gefs_tv2.nc')
+# gefs_tv2 = read_mdim('results/process_nwp_data/gefs_tv2.nc')
 
 # I don't know why this is such a pain to read
 # wrong dimensions:
@@ -242,7 +242,7 @@ get_valid_day = function(nc, days_ahead) {
   attr(nc, 'dimensions')$time$values + days_ahead
 }
 
-prepare_load_task = function(days_ahead = 2, predict_error = TRUE) {
+prepare_load_task = function(days_ahead = 2, use_gam = TRUE) {
   gam_loads = gam_fct$forecasts[, days_ahead + 1, ] %>%
     as.data.frame %>%
     cbind(day = gam_fct$model_day + days_ahead) %>%
@@ -279,19 +279,18 @@ prepare_load_task = function(days_ahead = 2, predict_error = TRUE) {
     subset(select = -day) %>%
     na.omit
   id = paste0('Forecast TV ', days_ahead)
-  if (predict_error) {
-    out$load_obs = NULL
-    as_task_regr(out, 'load_err', id = id)
-  } else {
+  if (use_gam) {
+    # Predict the error of the GAM instead of directly predicting load. But we
+    # need to leave the observation here so that mlr3 can calculate the MAPE.
+    # The error term is calculated later in an mlr3 pipeop.
+    # out$load_obs = NULL
+    # as_task_regr(out, 'load_err', id = id)
     out$load_err = NULL
-    as_task_regr(out, 'load_obs', id = id)
+  } else {
+    out[, c('load_pred', 'load_se', 'load_err')] = NULL
   }
+  as_task_regr(out, 'load_obs', id = id)
 }
-
-x0 = prepare_multiday_dataset(days_ahead = 2)
-
-x = prepare_load_task(days_ahead = 2)
-
 # st_extract for interpolation
 
 
@@ -325,7 +324,7 @@ system_tv = get_combined_tv(system_tv_sites)
 # only 400 of these, clearly I should collect more weather data for this step.
 # Note that this data is only May-September (technically April 29th)
 
-gefs = read_ncdf('data/gefs_nick.nc')
+# gefs = read_ncdf('data/gefs_nick.nc')
 
 # predict daily value (effective temp) instead of TV
 system_eff_tmp = get_combined_eff_tmp(system_tv_sites)
@@ -401,117 +400,6 @@ lgr::get_logger("bbotk")$set_threshold("warn")
 # lgr::get_logger("bbotk")$set_threshold("trace")
 
 
-PipeOpSubtractColumn = R6::R6Class('PipeOpSubtractColumn',
-  inherit = mlr3pipelines::PipeOpTargetTrafo,
-  public = list(
-      initialize = function(id = 'subtract.column', param_vals = list()) {
-      ps = ps(
-          column = paradox::p_uty(tags = c("train", "predict"))
-      )
-      # param_vals = list(column = column)
-      # ps$values = list(trafo = identity, inverter = identity)
-      super$initialize(id = id, param_set = ps, param_vals = param_vals)
-    }
-  ),
-  private = list(
-    .transform = function(task, phase) {
-      new_target = task$data(cols = task$target_names) -
-        task$data(cols = self$param_set$values$column)
-      # if (!is.data.frame(new_target) && !is.matrix(new_target)) {
-      #   stopf("Hyperparameter 'trafo' must be a function returning a 'data.frame', 'data.table', or 'matrix', not '%s'.", class(new_target)[[1L]])
-      # }
-      task$cbind(new_target)
-      convert_task(task, target = colnames(new_target), drop_original_target = TRUE)
-    },
-    .train_invert = function(task) {
-      # return a predict_phase_state object (can be anything)
-      list(truth = task$truth(),
-           subtracted = task$data(cols = self$param_set$values$column))
-    },
-    .invert = function(prediction, predict_phase_state) {
-      type = prediction$task_type
-      # need to adjust the means of the predicted distributions
-      means = unlist(prediction$distr$getParameterValue('mean'))
-      means = means + predict_phase_state$subtracted[[1]]
-      sds = unlist(prediction$distr$getParameterValue('sd'))
-      # need to wrap in a `VectorDistribution` (see `LearnerRegr`)
-      params = data.frame(mean = means, sd = sds)
-      distrs = distr6::VectorDistribution$new(distribution = "Normal",
-                                              params = params)
-      new_pred = list(distr = distrs)
-      mlr3misc::invoke(get(mlr_reflections$task_types[type, mult = "first"]$prediction)$new,
-                       row_ids = prediction$row_ids,
-                       truth = predict_phase_state$truth, .args = new_pred)
-    }
-  )
-)
-
-# try out the pipeop
-forecast_load_tasks0 = lapply(0:7, prepare_load_task, predict_error = FALSE)
-
-ngr_nopipe = LearnerRegrNGR$new()
-
-ngr_pipe = pipeline_targettrafo(
-    PipeOpLearner$new(LearnerRegrNGR$new()),
-    trafo_pipeop = PipeOpSubtractColumn$new(param_vals = list(column = 'load_pred'))
-)
-
-ngr_pipe$train(forecast_load_tasks0[[1]])
-
-x = ngr_pipe$predict(forecast_load_tasks0[[1]])
-
-bgrid = benchmark_grid(
-    tasks = forecast_load_tasks0,
-    learners = c(ngr_nopipe, ngr_pipe),
-    #learners = c(ngr, rangerdist_at, drf_at),
-    resamplings = rsmp('forecast_holdout')
-)
-system.time(bres0 <- progressr::with_progress(benchmark(bgrid)))
-# bres2$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
-bres0$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
-
-
-make_tasks = function() {
-  sapply(2:7, function(ahead) {
-    id = paste0('Forecast TV ', ahead)
-    prepare_multiday_dataset(ahead) %>%
-      with(cbind(x, y[, 1, drop = FALSE])) %>%
-      as_task_regr('load_err', id = id)
-  })
-}
-
-# make_gefs_tasks = function() {
-#   sapply(2:7, function(ahead) {
-#     id = paste0('Forecast TV ', ahead)
-#     gefs = get_gefs_samples(gefs_tv2, days_ahead = ahead)
-#     # make sure days are exactly the same as the prediction tasks
-#     compare_days = prepare_multiday_dataset(ahead)$day
-#     x = gefs$tv[match(compare_days, gefs$day), ]
-#     y = system_tv[match(compare_days, system_tv$day), 'tv', drop = FALSE]
-#     out = cbind(as.data.frame(x), y) %>%
-#       as_task_regr('tv', id = id)
-#   })
-# }
-
-make_gam_tasks = function() {
-  sapply(0:7, function(days_ahead) {
-    id = paste0('Forecast TV ', days_ahead)
-    gam_loads = gam_fct$forecasts[, days_ahead + 1, ] %>%
-      as.data.frame %>%
-      cbind(day = gam_fct$model_day + days_ahead) %>%
-      subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
-    names(gam_loads)[1:4] = paste0('load_', c('pred', 'se', 'err', 'obs'))
-    gam_loads %>%
-      subset(select = c(load_pred, load_obs)) %>%
-      na.omit %>%
-      as_task_regr('load_obs', id = id)
-  })
-}
-
-gam_tasks = make_gam_tasks()
-forecast_load_tasks = make_tasks()
-
-
 # I think the plan is that we run this benchmark over all the models
 
 ngr = LearnerRegrNGR$new()
@@ -560,12 +448,12 @@ drf_at = auto_tuner(
 )
 # system.time(drf_at$train(forecast_tv_tasks[[6]]))
 # from the source code:
-all.tunable.params <- c("sample.fraction", "mtry", "min.node.size", "honesty.fraction",
-                          "honesty.prune.leaves", "alpha", "imbalance.penalty")
+# all.tunable.params <- c("sample.fraction", "mtry", "min.node.size", "honesty.fraction",
+#                         "honesty.prune.leaves", "alpha", "imbalance.penalty")
 
 
 
-future::plan('multicore', workers = 4)
+# future::plan('multicore', workers = 4)
 # future::plan("multisession", workers = 4)
 
 # run the inner loop in parallel and the outer loop sequentially
@@ -573,68 +461,61 @@ future::plan('multicore', workers = 4)
 future::plan(list("sequential", "multicore"), workers = 4)
 # future::plan("sequential")
 
+# We are going to benchmark the models, first without using the GAM, and then
+# with
+
+forecast_load_tasks = lapply(0:7, prepare_load_task, use_gam = FALSE)
 bgrid = benchmark_grid(
     tasks = forecast_load_tasks,
-    learners = ngr,
-    # learners = c(ngr, rangerdist_at, drf_at),
-    resamplings = rsmp('forecast_holdout')
-)
-system.time(bres <- progressr::with_progress(benchmark(bgrid)))
-bres$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
-saveRDS(bres, 'benchmarks.rds')
-
-# new tasks
-
-forecast_load_tasks2 = lapply(0:7, prepare_load_task)
-bgrid = benchmark_grid(
-    tasks = forecast_load_tasks2,
     #learners = ngr,
     learners = c(ngr, rangerdist_at, drf_at),
     resamplings = rsmp('forecast_holdout')
 )
+system.time(bres <- progressr::with_progress(benchmark(bgrid)))
+bres$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
+# saveRDS(bres, 'benchmarks.rds')
+
+# try out the GAM+pipeop
+forecast_load_tasks2 = lapply(0:7, prepare_load_task, use_gam = TRUE)
+subtract_gam = PipeOpSubtractColumn$new(param_vals = list(column = 'load_pred'))
+
+model_pipelines = lapply(c(ngr, rangerdist_at, drf_at), function(x) {
+  pipeline_targettrafo(PipeOpLearner$new(ngr),
+                       trafo_pipeop = subtract_gam)
+})
+
+bgrid = benchmark_grid(
+    tasks = forecast_load_tasks2,
+    #learners = model_pipelines[[1]],
+    learners = model_pipelines,
+    resamplings = rsmp('forecast_holdout')
+)
 system.time(bres2 <- progressr::with_progress(benchmark(bgrid)))
-# bres2$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
-bres2$aggregate(c(msr('regr.crps'), msr('regr.mae')))
-# these are significantly better
+bres2$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
+# So this is much better for NGR (predictably), but worse for everything else?
+# How strange.
 
 
-# now we're going to try without using the GAM
-make_tasks2 = function() {
-  sapply(2:7, function(ahead) {
-    id = paste0('Forecast TV ', ahead)
-    prepare_multiday_dataset(ahead, predict_error = FALSE) %>%
-      with(cbind(x, y[, 1, drop = FALSE])) %>%
+# # get hyperparameter tuning results
+# extract_inner_tuning_results(bres2)
+
+# benchmark the GAM forecasts for comparison
+make_gam_tasks = function() {
+  sapply(0:7, function(days_ahead) {
+    id = paste0('Forecast TV ', days_ahead)
+    gam_loads = gam_fct$forecasts[, days_ahead + 1, ] %>%
+      as.data.frame %>%
+      cbind(day = gam_fct$model_day + days_ahead) %>%
+      subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
+    names(gam_loads)[1:4] = paste0('load_', c('pred', 'se', 'err', 'obs'))
+    gam_loads %>%
+      subset(select = c(load_pred, load_obs)) %>%
+      na.omit %>%
       as_task_regr('load_obs', id = id)
   })
 }
 
-# gefs_tasks = make_gefs_tasks()
-forecast_load_tasks2 = make_tasks2()
-
-bgrid = benchmark_grid(
-    tasks = forecast_load_tasks2,
-    # learners = ngr,
-    # learners = drf_at,
-    learners = c(ngr, rangerdist_at, drf_at),
-    resamplings = rsmp('forecast_holdout')
-)
-system.time(bres2 <- progressr::with_progress(benchmark(bgrid, store_models = TRUE)))
-bres2$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
-
-# for (i in 6:1) {
-#   print(i)
-#   drf_at$train(forecast_load_tasks2[[i]])
-# }
-
-# drf_at$train(forecast_load_tasks2[[6]])
-
-
-
-
-
-
-# get hyperparameter tuning results
-extract_inner_tuning_results(bres2)
+gam_tasks = make_gam_tasks()
 
 gam_tester = LearnerRegrIdent$new()
 gam_tester$predict_type = 'response'
@@ -647,37 +528,12 @@ bgrid = benchmark_grid(
 bres_gam = benchmark(bgrid)
 bres_gam$aggregate(c(msr('regr.mape'), msr('regr.mae')))
 
-# rough estimate of MAPE, until I set up the pipeline system-- probably using
-# `PipeOpTargetTrafo`
-gam_mape = bres_gam$aggregate(c(msr('regr.mape')))$regr.mape
-gam_mae = bres_gam$aggregate(c(msr('regr.mae')))$regr.mae
-estimate_mape_from_mae = function(mae) {
-  (mae / gam_mae) * gam_mape * 100
-}
-
-bres2$aggregate(msr('regr.mae')) %>%
-  subset(learner_id == 'regr.drf.tuned') %>%
-  getElement('regr.mae') %>%
-  estimate_mape_from_mae
-estimate_mape_from_mae(bres2$aggregate(msr('regr.mae'))$regr.mae)
-
-# slightly different for GEFS benchmarking
-gefs_tester = LearnerRegrIdent$new()
-gefs_tester$id = 'GEFS'
-bgrid = benchmark_grid(
-    tasks = gefs_tasks,
-    learners = gefs_tester,
-    resamplings = rsmp('forecast_holdout')
-)
-bres_gefs = benchmark(bgrid)
-bres_gefs$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
-
-
 all_res = rbind(
+    bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse'))),
     bres2$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse'))),
     bres_gam$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 )
-saveRDS(all_res, 'benchmarks.rds')
+saveRDS(all_res, 'results/forecast_load/benchmarks.rds')
 
 all_res %>%
   subset(select = c(task_id, learner_id, regr.crps)) %>%
@@ -701,6 +557,9 @@ all_res %>%
   geom_line()
 
 all_res %>%
+  # remove the GAM-based models
+  subset(!startsWith(learner_id, 'subtract')) %>%
+  subset(!endsWith(learner_id, 'ngr')) %>%
   transform(days_ahead = as.integer(substr(task_id, 13, 13))) %>%
   transform(mae = regr.mae / (gefs_baseline[as.character(days_ahead)])) %>%
   ggplot(aes(x = days_ahead, y = mae, color = learner_id)) +
