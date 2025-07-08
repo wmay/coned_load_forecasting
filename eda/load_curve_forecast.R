@@ -194,9 +194,29 @@ plot(g2$gam, residuals = T, scheme = 2)
 
 # strangely `read_mdim` works fine while `read_ncdf` messes up the coordinates
 # gefs_tv = read_ncdf('results/process_nwp_data/gefs_tv2.nc')
-gefs_tv = read_mdim('results/process_nwp_data/gefs_tv2.nc')
+# gefs_tv = read_mdim('results/process_nwp_data/gefs_tv2.nc')
+# tv_fct_list = lapply(2:7, function(x) make_nwp_tv_dataset(gefs_tv, 3, 4, x))
 # tv_fct = make_nwp_tv_dataset(gefs_tv, 3, 4, days_ahead = 2)
-tv_fct_list = lapply(2:7, function(x) make_nwp_tv_dataset(gefs_tv, 3, 4, x))
+gefs_tv = read_mdim('results/process_nwp_data/gefs_tv.nc')
+make_nwp_tv_dataset2 = function(days_ahead = 2, lon, lat, predict_error = TRUE) {
+  out = gefs_tv %>%
+    lapply(function(x) x[lon, lat, days_ahead + 1, ]) %>%
+    as.data.frame %>%
+    # remember days in gefs_tv are forecast days, not valid days
+    transform(day = attr(gefs_tv, 'dimensions')$time$values + days_ahead)
+  # For days_ahead < 2, need to add observed (past) portion of TV to the
+  # forecast portion. TV_sd is correct though, since observations have 0 sd
+  if (days_ahead == 1) {
+    out$TV = out$TV + .1 * system_tv$tv[match(out$day, system_tv$day + 1)]
+  }
+  if (days_ahead == 0) {
+    out$TV = out$TV + .2 * system_tv$tv[match(out$day, system_tv$day + 1)] +
+      .1 * system_tv$tv[match(out$day, system_tv$day + 2)]
+  }
+  out
+}
+tv_fct_list = lapply(0:7, function(x) make_nwp_tv_dataset2(x, 3, 4))
+
 
 get_gam_forecast = function(model_day, tv, days_ahead = 0) {
   fit = try(get_fit_as_of(model_day))
@@ -214,12 +234,12 @@ get_gam_forecast = function(model_day, tv, days_ahead = 0) {
 }
 
 gam_forecasts = sapply(forecast_days, function(x) {
-  valid_days = x + 2:7
-  new_tv = sapply(2:7, function(i) {
-    tv_fct = tv_fct_list[[i - 1]]
-    tv_fct$tv[match(x + i, tv_fct$day)]
+  valid_days = x + 0:7
+  new_tv = sapply(0:7, function(i) {
+    tv_fct = tv_fct_list[[i + 1]]
+    tv_fct$TV[match(x + i, tv_fct$day)]
   })
-  out = get_gam_forecast(x, new_tv, days_ahead = 2:7)
+  out = get_gam_forecast(x, new_tv, days_ahead = 0:7)
   # add the forecast error
   obs_load = peaks$reading[match(valid_days, peaks$day)]
   fct_err = obs_load - out[, 'fit']
@@ -228,7 +248,9 @@ gam_forecasts = sapply(forecast_days, function(x) {
 gam_forecasts = aperm(gam_forecasts, c(3, 1, 2))
 
 # quick check
-plot(gam_forecasts[, 1, 1], gam_forecasts[, 1, 4])
+plot(gam_forecasts[, 1, 1], gam_forecasts[, 1, 4]) # fit vs obs
+abline(0, 1)
+# why does this look almost bimodal? could it be cogen events? or sea breeze!
 plot(gam_forecasts[, 6, 1], gam_forecasts[, 6, 4])
 # strong relationship between GAM predictions and observed loads, as there
 # should be
@@ -237,10 +259,15 @@ plot(gam_forecasts[, 6, 1], gam_forecasts[, 6, 4])
 mae = function(obs, fct) mean(abs(obs - fct), na.rm = TRUE)
 mape = function(obs, fct) 100 * mean(abs((obs - fct) / obs), na.rm = TRUE)
 
-sapply(1:6, function(i) mape(gam_forecasts[, i, 1], gam_forecasts[, i, 4]))
-# [1] 7.072099 7.368438 7.638298 7.958399 8.517402 9.036653
-sapply(1:6, function(i) mae(gam_forecasts[, i, 1], gam_forecasts[, i, 4]))
-# [1] 609.0118 635.2708 661.4272 691.1363 741.0981 786.4698
+sapply(1:8, function(i) mape(gam_forecasts[, i, 1], gam_forecasts[, i, 4]))
+#          old:     [1] 7.072099 7.368438 7.638298 7.958399 8.517402 9.036653
+# [1] 5.987588 6.588521 6.944222 7.210157 7.488786 7.846614 8.361008 8.868364
+sapply(1:8, function(i) mae(gam_forecasts[, i, 1], gam_forecasts[, i, 4]))
+#          old:     [1] 609.0118 635.2708 661.4272 691.1363 741.0981 786.4698
+# [1] 498.9316 555.5387 586.9855 610.7629 636.5281 668.3314 714.1516 758.0295
+
+# note that these results are relatively high because the earlier forecasts are
+# less certain
 
 out = list(model_day = forecast_days, forecasts = gam_forecasts)
 saveRDS(out, 'results/load_curve_forecast/gam_forecasts.rds')

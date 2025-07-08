@@ -235,38 +235,56 @@ gefs_0p25_3day = read_mdim('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
 gefs_0p5_3day = read_mdim('results/process_nwp_data/gefs_0p5_3day_wmean.nc')
 gefs_tv = read_mdim('results/process_nwp_data/gefs_tv.nc')
 
-dim(gefs_0p25_3day['u10', 1, 1, , 1][['u10']])
+# dim(gefs_0p25_3day['u10', 1, 1, , 1][['u10']])
+
+get_valid_day = function(nc, days_ahead) {
+  # time is generally read by R as a date, due to the 1 day differences
+  attr(nc, 'dimensions')$time$values + days_ahead
+}
 
 prepare_load_task = function(days_ahead = 2, predict_error = TRUE) {
-  # currently this only support days_ahead >= 2 due to missing GAM forecasts
-  gam_loads = gam_fct$forecasts[, days_ahead - 1, ] %>%
+  gam_loads = gam_fct$forecasts[, days_ahead + 1, ] %>%
     as.data.frame %>%
     cbind(day = gam_fct$model_day + days_ahead) %>%
     subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
   names(gam_loads)[1:4] = paste0('load_', c('pred', 'se', 'err', 'obs'))
   out_0p25 = gefs_0p25_3day %>%
-    lapply(function(x) x[1, 1,, days_ahead + 1]) %>%
+    lapply(function(x) x[3, 4,, days_ahead + 1]) %>%
     as.data.frame %>%
     subset(select = -eff_temp) %>% # 3-day eff_temp is same as TV
-    transform(day = attr(gefs_0p25_3day, 'dimensions')$time$values)
+    transform(day = get_valid_day(gefs_0p25_3day, days_ahead))
   out_0p5 = gefs_0p5_3day %>%
     lapply(function(x) x[1, 1,, days_ahead + 1]) %>%
     as.data.frame %>%
-    transform(day = attr(gefs_0p5_3day, 'dimensions')$time$values)
+    transform(day = get_valid_day(gefs_0p5_3day, days_ahead))
   out_tv = gefs_tv %>%
-    lapply(function(x) x[1, 1, days_ahead + 1, ]) %>%
+    lapply(function(x) x[3, 4, days_ahead + 1, ]) %>%
     as.data.frame %>%
-    transform(day = attr(gefs_tv, 'dimensions')$time$values)
+    transform(day = get_valid_day(gefs_tv, days_ahead))
+  # For days_ahead < 2, need to add observed (past) portion of TV to the
+  # forecast portion. TV_sd is correct though, since observations have 0 sd
+  if (days_ahead == 1) {
+    out_tv$TV = out_tv$TV +
+      .1 * system_tv$tv[match(out_tv$day, system_tv$day + 1)]
+  }
+  if (days_ahead == 0) {
+    out_tv$TV = out_tv$TV +
+      .2 * system_tv$tv[match(out_tv$day, system_tv$day + 1)] +
+      .1 * system_tv$tv[match(out_tv$day, system_tv$day + 2)]
+  }
   out = merge(out_0p25, out_0p5, by = 'day') %>%
     merge(out_tv, by = 'day') %>%
     merge(gam_loads, by = 'day') %>%
     transform(doy = as.POSIXlt(day)$yday) %>%
     subset(select = -day) %>%
     na.omit
+  id = paste0('Forecast TV ', days_ahead)
   if (predict_error) {
     out$load_obs = NULL
-    id = paste0('Forecast TV ', days_ahead)
     as_task_regr(out, 'load_err', id = id)
+  } else {
+    out$load_err = NULL
+    as_task_regr(out, 'load_obs', id = id)
   }
 }
 
@@ -278,7 +296,7 @@ x = prepare_load_task(days_ahead = 2)
 
 
 # set up the effective temp data
-data_wide = readRDS('results/load_vs_weather/tv_and_load.rds')
+# data_wide = readRDS('results/load_vs_weather/tv_and_load.rds')
 
 SetUnitSystem('SI')
 tv_vars = c('tair', 'relh')
@@ -374,12 +392,83 @@ library(mlr3learners)
 library(mlr3tuning)
 library(mlr3tuningspaces)
 library(mlr3temporal)
+library(mlr3pipelines)
 
 # see notes in `?benchmark` and `?mlr_tuners_random_search`
 lgr::get_logger("mlr3")$set_threshold("warn")
 lgr::get_logger("bbotk")$set_threshold("warn")
 # lgr::get_logger("mlr3")$set_threshold("trace")
 # lgr::get_logger("bbotk")$set_threshold("trace")
+
+
+PipeOpSubtractColumn = R6::R6Class('PipeOpSubtractColumn',
+  inherit = mlr3pipelines::PipeOpTargetTrafo,
+  public = list(
+      initialize = function(id = 'subtract.column', param_vals = list()) {
+      ps = ps(
+          column = paradox::p_uty(tags = c("train", "predict"))
+      )
+      # param_vals = list(column = column)
+      # ps$values = list(trafo = identity, inverter = identity)
+      super$initialize(id = id, param_set = ps, param_vals = param_vals)
+    }
+  ),
+  private = list(
+    .transform = function(task, phase) {
+      new_target = task$data(cols = task$target_names) -
+        task$data(cols = self$param_set$values$column)
+      # if (!is.data.frame(new_target) && !is.matrix(new_target)) {
+      #   stopf("Hyperparameter 'trafo' must be a function returning a 'data.frame', 'data.table', or 'matrix', not '%s'.", class(new_target)[[1L]])
+      # }
+      task$cbind(new_target)
+      convert_task(task, target = colnames(new_target), drop_original_target = TRUE)
+    },
+    .train_invert = function(task) {
+      # return a predict_phase_state object (can be anything)
+      list(truth = task$truth(),
+           subtracted = task$data(cols = self$param_set$values$column))
+    },
+    .invert = function(prediction, predict_phase_state) {
+      type = prediction$task_type
+      # need to adjust the means of the predicted distributions
+      means = unlist(prediction$distr$getParameterValue('mean'))
+      means = means + predict_phase_state$subtracted[[1]]
+      sds = unlist(prediction$distr$getParameterValue('sd'))
+      # need to wrap in a `VectorDistribution` (see `LearnerRegr`)
+      params = data.frame(mean = means, sd = sds)
+      distrs = distr6::VectorDistribution$new(distribution = "Normal",
+                                              params = params)
+      new_pred = list(distr = distrs)
+      mlr3misc::invoke(get(mlr_reflections$task_types[type, mult = "first"]$prediction)$new,
+                       row_ids = prediction$row_ids,
+                       truth = predict_phase_state$truth, .args = new_pred)
+    }
+  )
+)
+
+# try out the pipeop
+forecast_load_tasks0 = lapply(0:7, prepare_load_task, predict_error = FALSE)
+
+ngr_nopipe = LearnerRegrNGR$new()
+
+ngr_pipe = pipeline_targettrafo(
+    PipeOpLearner$new(LearnerRegrNGR$new()),
+    trafo_pipeop = PipeOpSubtractColumn$new(param_vals = list(column = 'load_pred'))
+)
+
+ngr_pipe$train(forecast_load_tasks0[[1]])
+
+x = ngr_pipe$predict(forecast_load_tasks0[[1]])
+
+bgrid = benchmark_grid(
+    tasks = forecast_load_tasks0,
+    learners = c(ngr_nopipe, ngr_pipe),
+    #learners = c(ngr, rangerdist_at, drf_at),
+    resamplings = rsmp('forecast_holdout')
+)
+system.time(bres0 <- progressr::with_progress(benchmark(bgrid)))
+# bres2$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
+bres0$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
 
 
 make_tasks = function() {
@@ -394,7 +483,7 @@ make_tasks = function() {
 # make_gefs_tasks = function() {
 #   sapply(2:7, function(ahead) {
 #     id = paste0('Forecast TV ', ahead)
-#     gefs = get_gefs_samples(gefs_tv, days_ahead = ahead)
+#     gefs = get_gefs_samples(gefs_tv2, days_ahead = ahead)
 #     # make sure days are exactly the same as the prediction tasks
 #     compare_days = prepare_multiday_dataset(ahead)$day
 #     x = gefs$tv[match(compare_days, gefs$day), ]
@@ -404,7 +493,22 @@ make_tasks = function() {
 #   })
 # }
 
-# gefs_tasks = make_gefs_tasks()
+make_gam_tasks = function() {
+  sapply(0:7, function(days_ahead) {
+    id = paste0('Forecast TV ', days_ahead)
+    gam_loads = gam_fct$forecasts[, days_ahead + 1, ] %>%
+      as.data.frame %>%
+      cbind(day = gam_fct$model_day + days_ahead) %>%
+      subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
+    names(gam_loads)[1:4] = paste0('load_', c('pred', 'se', 'err', 'obs'))
+    gam_loads %>%
+      subset(select = c(load_pred, load_obs)) %>%
+      na.omit %>%
+      as_task_regr('load_obs', id = id)
+  })
+}
+
+gam_tasks = make_gam_tasks()
 forecast_load_tasks = make_tasks()
 
 
@@ -481,15 +585,16 @@ saveRDS(bres, 'benchmarks.rds')
 
 # new tasks
 
-forecast_load_tasks2 = lapply(2:7, prepare_load_task)
+forecast_load_tasks2 = lapply(0:7, prepare_load_task)
 bgrid = benchmark_grid(
     tasks = forecast_load_tasks2,
-    learners = ngr,
-    # learners = c(ngr, rangerdist_at, drf_at),
+    #learners = ngr,
+    learners = c(ngr, rangerdist_at, drf_at),
     resamplings = rsmp('forecast_holdout')
 )
 system.time(bres2 <- progressr::with_progress(benchmark(bgrid)))
-bres2$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
+# bres2$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
+bres2$aggregate(c(msr('regr.crps'), msr('regr.mae')))
 # these are significantly better
 
 
@@ -531,6 +636,31 @@ bres2$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
 # get hyperparameter tuning results
 extract_inner_tuning_results(bres2)
 
+gam_tester = LearnerRegrIdent$new()
+gam_tester$predict_type = 'response'
+gam_tester$id = 'GEFS+GAM'
+bgrid = benchmark_grid(
+    tasks = gam_tasks,
+    learners = gam_tester,
+    resamplings = rsmp('forecast_holdout')
+)
+bres_gam = benchmark(bgrid)
+bres_gam$aggregate(c(msr('regr.mape'), msr('regr.mae')))
+
+# rough estimate of MAPE, until I set up the pipeline system-- probably using
+# `PipeOpTargetTrafo`
+gam_mape = bres_gam$aggregate(c(msr('regr.mape')))$regr.mape
+gam_mae = bres_gam$aggregate(c(msr('regr.mae')))$regr.mae
+estimate_mape_from_mae = function(mae) {
+  (mae / gam_mae) * gam_mape * 100
+}
+
+bres2$aggregate(msr('regr.mae')) %>%
+  subset(learner_id == 'regr.drf.tuned') %>%
+  getElement('regr.mae') %>%
+  estimate_mape_from_mae
+estimate_mape_from_mae(bres2$aggregate(msr('regr.mae'))$regr.mae)
+
 # slightly different for GEFS benchmarking
 gefs_tester = LearnerRegrIdent$new()
 gefs_tester$id = 'GEFS'
@@ -540,12 +670,12 @@ bgrid = benchmark_grid(
     resamplings = rsmp('forecast_holdout')
 )
 bres_gefs = benchmark(bgrid)
-bres_gefs$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+bres_gefs$aggregate(c(msr('regr.crps'), msr('regr.mape'), msr('regr.mae')))
 
 
 all_res = rbind(
-    bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse'))),
-    bres_gefs$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+    bres2$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse'))),
+    bres_gam$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 )
 saveRDS(all_res, 'benchmarks.rds')
 
@@ -561,9 +691,9 @@ library(ggplot2)
 # library(tidyr)
 
 gefs_baseline = all_res %>%
-  subset(learner_id == 'GEFS') %>%
+  subset(learner_id == 'GEFS+GAM') %>%
   transform(days_ahead = as.integer(substr(task_id, 13, 13))) %>%
-  with(setNames(regr.crps, days_ahead))
+  with(setNames(regr.mae, days_ahead))
 
 all_res %>%
   transform(days_ahead = as.integer(substr(task_id, 13, 13))) %>%
@@ -572,8 +702,8 @@ all_res %>%
 
 all_res %>%
   transform(days_ahead = as.integer(substr(task_id, 13, 13))) %>%
-  transform(crps = regr.crps / (gefs_baseline[as.character(days_ahead)])) %>%
-  ggplot(aes(x = days_ahead, y = crps, color = learner_id)) +
+  transform(mae = regr.mae / (gefs_baseline[as.character(days_ahead)])) %>%
+  ggplot(aes(x = days_ahead, y = mae, color = learner_id)) +
   geom_line()
 
 comparison_plot = function(metrics, nwp_acc) {

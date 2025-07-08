@@ -129,16 +129,43 @@ LearnerRegrDrf = R6::R6Class(
       if ("weights" %in% task$properties) {
         pv$sample.weights = task$weights$weight
       }
-      mlr3misc::invoke(
-          drf::drf,
-          X = task$data(cols = task$feature_names),
-          Y = task$data(cols = task$target_names),
-          .args = pv
-      )
+      # mlr3misc::invoke(
+      #     drf::drf,
+      #     X = task$data(cols = task$feature_names),
+      #     Y = task$data(cols = task$target_names),
+      #     .args = pv
+      #     )
+      # drf::drf(X = task$data(cols = task$feature_names),
+      #          Y = task$data(cols = task$target_names))
+      args = list(X = task$data(cols = task$feature_names),
+                  Y = task$data(cols = task$target_names))
+      args = c(args, pv)
+      tryCatch({
+        do.call(drf::drf, args)
+      }, error = function(e) {
+        print('Error message:')
+        print(as.character(e))
+        warning(as.character(e))
+      })
     },
     .predict = function(task) {
       pv = self$param_set$get_values(tags = "predict")
       newdata = task$data(cols = task$feature_names)
+      n_pred = nrow(newdata)
+      if (inherits(self$model, 'character')) {
+        # print('Model is an error message:')
+        # print(self$model)
+        train_params = self$param_set$get_values(tags = "train")
+        param_txt = paste(capture.output(print(train_params)), collapse=' ')
+        warning_txt = paste0('Model is an error message. Parameters: ', param_txt)
+        warning(warning_txt)
+        # for now just return bad predictions
+        params = data.frame(mean = rep(0, nrow(newdata)),
+                            sd = .Machine$double.xmax)
+        distrs = distr6::VectorDistribution$new(distribution = "Normal",
+                                                params = params)
+        return(list(distr = distrs))
+      }
       means = predict(self$model, newdata = newdata, functional = 'mean')
       sds = predict(self$model, newdata = newdata, functional = 'sd')
       # need to wrap in a `VectorDistribution` (see `LearnerRegr`)

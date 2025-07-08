@@ -62,7 +62,7 @@ LearnerRegrIdent = R6::R6Class(
       super$initialize(
         id = "regr.ident",
         feature_types = c("logical", "integer", "numeric", "factor", "ordered"),
-        predict_types = "distr",
+        predict_types = c('response', "distr"),
         packages = character(),
         properties = c("weights", "missings"),
         label = "Identity"
@@ -74,11 +74,17 @@ LearnerRegrIdent = R6::R6Class(
         TRUE # no model needed
       },
       .predict = function(task) {
-        samples = task$data()
-        distlist = split(samples, 1:nrow(samples)) %>%
-          lapply(function(x) distr6::Empirical$new(samples = x))
-        distrs = distr6::VectorDistribution$new(distlist = distlist)
-        list(distr = distrs)
+        newdata = task$data(cols = task$feature_names)
+        if (self$predict_type == 'response') {
+          # it's just the first predictor column
+          list(response = as.data.frame(newdata)[, 1])
+        } else if (self$predict_type == 'distr') {
+          samples = newdata
+          distlist = split(samples, 1:nrow(samples)) %>%
+            lapply(function(x) distr6::Empirical$new(samples = x))
+          distrs = distr6::VectorDistribution$new(distlist = distlist)
+          list(distr = distrs)
+        }
       }
   )
 )
