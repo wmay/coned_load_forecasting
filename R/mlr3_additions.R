@@ -82,7 +82,14 @@ LearnerRegrIdent = R6::R6Class(
         } else if (self$predict_type == 'distr') {
           samples = newdata
           distlist = split(samples, 1:nrow(samples)) %>%
-            lapply(function(x) distr6::Empirical$new(samples = x))
+            lapply(function(x) {
+              if (all(is.na(x))) {
+                print(x)
+                stop('all samples are missing')
+              }
+              if (any(is.na(x))) warning('task contains missing samples')
+              distr6::Empirical$new(samples = na.omit(x))
+            })
           distrs = distr6::VectorDistribution$new(distlist = distlist)
           list(distr = distrs)
         }

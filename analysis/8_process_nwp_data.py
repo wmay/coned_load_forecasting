@@ -227,6 +227,8 @@ gefs_tv_members = gefs_eff_temp.sel(edt9pm_day=slice(0, None)) * .7 +\
     gefs_eff_temp.sel(edt9pm_day=slice(-1, 6)).values * .2 +\
     gefs_eff_temp.sel(edt9pm_day=slice(None, 5)).values * .1
 gefs_tv_members = gefs_tv_members.rename('TV')
+# we need the individual members to calculate CRPS for GEFS
+gefs_tv_members.to_netcdf('results/process_nwp_data/gefs_tv_members.nc')
 
 gefs_tv = xr.merge([gefs_tv_members.mean('number'),
                     gefs_tv_members.std('number').rename('TV_sd')])

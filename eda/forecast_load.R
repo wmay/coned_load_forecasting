@@ -528,10 +528,12 @@ bgrid = benchmark_grid(
 bres_gam = benchmark(bgrid)
 bres_gam$aggregate(c(msr('regr.mape'), msr('regr.mae')))
 
+load_measures = c(msr('regr.crps'), msr('regr.mae'), msr('regr.mape'),
+                  msr('regr.rmse'))
 all_res = rbind(
-    bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse'))),
-    bres2$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse'))),
-    bres_gam$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+    bres$aggregate(load_measures),
+    bres2$aggregate(load_measures),
+    bres_gam$aggregate(load_measures)
 )
 saveRDS(all_res, 'results/forecast_load/benchmarks.rds')
 

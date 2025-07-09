@@ -161,7 +161,7 @@ LearnerRegrDrf = R6::R6Class(
         warning(warning_txt)
         # for now just return bad predictions
         params = data.frame(mean = rep(0, nrow(newdata)),
-                            sd = .Machine$double.xmax)
+                            sd = sqrt(.Machine$double.xmax))
         distrs = distr6::VectorDistribution$new(distribution = "Normal",
                                                 params = params)
         return(list(distr = distrs))

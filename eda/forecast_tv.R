@@ -296,11 +296,77 @@ prepare_multiday_dataset = function(days_ahead = 2) {
 
 # strangely `read_mdim` works fine while `read_ncdf` messes up the coordinates
 # gefs_tv = read_ncdf('results/process_nwp_data/gefs_tv2.nc')
-gefs_tv = read_mdim('results/process_nwp_data/gefs_tv2.nc')
+gefs_tv2 = read_mdim('results/process_nwp_data/gefs_tv2.nc')
+gefs_tv3 = read_mdim('results/process_nwp_data/gefs_tv_members.nc')
+
+# I don't know why this is such a pain to read
+# wrong dimensions:
+# read_ncdf('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
+# fails, but differently:
+# read_mdim('results/process_nwp_data/gefs_0p25_3day_wmean.nc', variable = "?")
+# works, but many warnings:
+# read_stars('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
+# this will fail if some variables have dimensions in a different order!!
+gefs_0p25_3day = read_mdim('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
+gefs_0p5_3day = read_mdim('results/process_nwp_data/gefs_0p5_3day_wmean.nc')
+gefs_tv = read_mdim('results/process_nwp_data/gefs_tv.nc')
+
+get_valid_day = function(nc, days_ahead) {
+  # time is generally read by R as a date, due to the 1 day differences
+  attr(nc, 'dimensions')$time$values + days_ahead
+}
+
+prepare_tv_task = function(days_ahead = 2, predict_error = TRUE) {
+  # Note: netcdf files use forecast day, while `system_tv` uses valid day. Must
+  # be consistent!
+  out_0p25 = gefs_0p25_3day %>%
+    lapply(function(x) x[3, 4,, days_ahead + 1]) %>%
+    as.data.frame %>%
+    subset(select = -eff_temp) %>% # 3-day eff_temp is same as TV
+    transform(day = get_valid_day(gefs_0p25_3day, days_ahead))
+  out_0p5 = gefs_0p5_3day %>%
+    lapply(function(x) x[1, 1,, days_ahead + 1]) %>%
+    as.data.frame %>%
+    transform(day = get_valid_day(gefs_0p5_3day, days_ahead))
+  out_tv = gefs_tv %>%
+    lapply(function(x) x[3, 4, days_ahead + 1, ]) %>%
+    as.data.frame %>%
+    transform(day = get_valid_day(gefs_tv, days_ahead))
+  # For days_ahead < 2, need to add observed (past) portion of TV to the
+  # forecast portion. TV_sd is correct though, since observations have 0 sd
+  if (days_ahead == 1) {
+    out_tv$TV = out_tv$TV +
+      .1 * system_tv$tv[match(out_tv$day - 2, system_tv$day)]
+  }
+  if (days_ahead == 0) {
+    out_tv$TV = out_tv$TV +
+      .2 * system_tv$tv[match(out_tv$day - 1, system_tv$day)] +
+      .1 * system_tv$tv[match(out_tv$day - 2, system_tv$day)]
+  }
+  out = merge(out_0p25, out_0p5, by = 'day') %>%
+    merge(out_tv, by = 'day') %>%
+    transform(doy = as.POSIXlt(day)$yday)
+  id = paste0('Forecast TV ', days_ahead)
+  if (predict_error) {
+    # Predict the GEFS forecast error instead of directly predicting TV
+    out %>%
+      transform(fct_err = TV - system_tv$tv[match(day, system_tv$day)]) %>%
+      subset(select = -day) %>%
+      na.omit %>%
+      as_task_regr('fct_err', id = id)
+  } else {
+    out %>%
+      transform(tv_obs = system_tv$tv[match(day, system_tv$day)]) %>%
+      subset(select = -day) %>%
+      na.omit %>%
+      as_task_regr('tv_obs', id = id)
+  }
+}
+# st_extract for interpolation
 
 
-# set up the effective temp data
-data_wide = readRDS('results/load_vs_weather/tv_and_load.rds')
+# # set up the effective temp data
+# data_wide = readRDS('results/load_vs_weather/tv_and_load.rds')
 
 SetUnitSystem('SI')
 tv_vars = c('tair', 'relh')
@@ -380,13 +446,6 @@ library(mlr3temporal)
 # see notes in `?benchmark` and `?mlr_tuners_random_search`
 lgr::get_logger("mlr3")$set_threshold("warn")
 lgr::get_logger("bbotk")$set_threshold("warn")
-# lgr::get_logger("mlr3")$set_threshold("debug")
-# lgr::get_logger("bbotk")$set_threshold("debug")
-# lgr::get_logger()$set_threshold("debug")
-# lgr::get_logger("mlr3")$set_threshold("trace")
-# lgr::get_logger("bbotk")$set_threshold("trace")
-# lgr::get_logger()$set_threshold("trace")
-# library(lgr)
 
 # RandomforestGLS
 LearnerRegrRfgls = R6::R6Class(
@@ -467,30 +526,17 @@ LearnerRegrRfgls = R6::R6Class(
   )
 )
 
-make_tasks = function() {
-  sapply(2:7, function(ahead) {
-    id = paste0('Forecast TV ', ahead)
-    prepare_multiday_dataset(ahead) %>%
-      with(cbind(x, y[, 1, drop = FALSE])) %>%
-      as_task_regr('tv_fc_err', id = id)
-  })
-}
+# make_tasks = function() {
+#   sapply(2:7, function(ahead) {
+#     id = paste0('Forecast TV ', ahead)
+#     prepare_multiday_dataset(ahead) %>%
+#       with(cbind(x, y[, 1, drop = FALSE])) %>%
+#       as_task_regr('tv_fc_err', id = id)
+#   })
+# }
 
-make_gefs_tasks = function() {
-  sapply(2:7, function(ahead) {
-    id = paste0('Forecast TV ', ahead)
-    gefs = get_gefs_samples(gefs_tv, days_ahead = ahead)
-    # make sure days are exactly the same as the prediction tasks
-    compare_days = prepare_multiday_dataset(ahead)$day
-    x = gefs$tv[match(compare_days, gefs$day), ]
-    y = system_tv[match(compare_days, system_tv$day), 'tv', drop = FALSE]
-    out = cbind(as.data.frame(x), y) %>%
-      as_task_regr('tv', id = id)
-  })
-}
 
-gefs_tasks = make_gefs_tasks()
-forecast_tv_tasks = make_tasks()
+# forecast_tv_tasks = make_tasks()
 
 # learner = LearnerRegrIdent$new()
 # learner$train(gefs_tasks[[1]])
@@ -632,23 +678,34 @@ drf_at = auto_tuner(
 # # consistent result
 
 
-future::plan('multicore', workers = 4)
-# future::plan("multisession", workers = 4)
-
 # run the inner loop in parallel and the outer loop sequentially
-future::plan(list("sequential", "multisession"), workers = 4)
+future::plan(list('sequential', 'multicore'), workers = 4)
 # future::plan("sequential")
 
+# benchmark methods, first predicting the result directly, then predicting the
+# GEFS forecast error  
+forecast_tv_tasks = lapply(0:7, prepare_tv_task, predict_error = FALSE)
 bgrid = benchmark_grid(
     tasks = forecast_tv_tasks,
-    # learners = rfgls_at,
     learners = c(ngr, rangerdist_at, drf_at),
     resamplings = rsmp('forecast_holdout')
 )
 system.time(bres <- progressr::with_progress(benchmark(bgrid)))
-# system.time(bres <- benchmark(bgrid, store_models = TRUE, encapsulate = 'try'))
 bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 saveRDS(bres, 'benchmarks.rds')
+
+forecast_tv_tasks2 = lapply(0:7, prepare_tv_task, predict_error = TRUE)
+bgrid = benchmark_grid(
+    tasks = forecast_tv_tasks2,
+    learners = c(ngr, rangerdist_at, drf_at),
+    resamplings = rsmp('forecast_holdout')
+)
+system.time(bres2 <- progressr::with_progress(benchmark(bgrid)))
+bres2$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+# this one is consistently a bit better
+
+# bres$aggregate(c(msr('regr.crps'), msr('regr.mae')))
+# bres2$aggregate(c(msr('regr.crps'), msr('regr.mae')))
 
 # found it!-- small number (1?) of NaN in the prediction matrix
 
@@ -698,7 +755,49 @@ saveRDS(bres, 'benchmarks.rds')
 extract_inner_tuning_results(bres)
 
 # slightly different for GEFS benchmarking
+
+# get a matrix of GEFS TV forecasts
+get_gefs_samples = function(nc, lon = 3, lat = 4, days_ahead = 2) {
+  # when read by `read_mdim` time values are read as dates despite having a time
+  # as well
+  dates = attr(nc, 'dimensions')$time$values + days_ahead
+  # days ahead starts at 0 in the array
+  # if (days_ahead < 2) stop('TV only available starting day 2')
+  tv = t(nc[['TV']][lon, lat,, days_ahead + 1, ])
+  # For days_ahead < 2, need to add observed (past) portion of TV to the
+  # forecast portion. TV_sd is correct though, since observations have 0 sd
+  if (days_ahead == 1) {
+    tv = tv +
+      .1 * system_tv$tv[match(dates - 2, system_tv$day)]
+  }
+  if (days_ahead == 0) {
+    tv = tv +
+      .2 * system_tv$tv[match(dates - 1, system_tv$day)] +
+      .1 * system_tv$tv[match(dates - 2, system_tv$day)]
+  }
+  list(day = dates, tv = tv)
+}
+
+make_gefs_tasks = function() {
+  sapply(0:7, function(ahead) {
+    id = paste0('Forecast TV ', ahead)
+    gefs = get_gefs_samples(gefs_tv3, days_ahead = ahead)
+    # make sure days are exactly the same as the prediction tasks
+    # compare_days = prepare_multiday_dataset(ahead)$day
+    compare_days = get_valid_day(gefs_tv, ahead)
+    x = gefs$tv
+    missing_row = apply(x, 1, function(x) all(is.na(x)))
+    y = system_tv[match(gefs$day, system_tv$day), 'tv', drop = FALSE]
+    cbind(as.data.frame(x), y) %>%
+      subset(!missing_row) %>%
+      subset(!is.na(tv)) %>%
+      as_task_regr('tv', id = id)
+  })
+}
+gefs_tasks = make_gefs_tasks()
+
 gefs_tester = LearnerRegrIdent$new()
+gefs_tester$predict_type = 'distr'
 gefs_tester$id = 'GEFS'
 bgrid = benchmark_grid(
     tasks = gefs_tasks,
@@ -710,10 +809,10 @@ bres_gefs$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 
 
 all_res = rbind(
-    bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse'))),
+    bres2$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse'))),
     bres_gefs$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 )
-saveRDS(all_res, 'benchmarks.rds')
+saveRDS(all_res, 'results/forecast_tv/benchmarks.rds')
 
 all_res %>%
   subset(select = c(task_id, learner_id, regr.crps)) %>%
