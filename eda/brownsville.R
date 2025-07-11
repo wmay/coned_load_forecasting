@@ -145,11 +145,13 @@ prepare_tv_task = function(days_ahead = 2, predict_error = TRUE) {
   id = paste0('Forecast TV ', days_ahead)
   if (predict_error) {
     # Predict the GEFS forecast error instead of directly predicting TV
-    out %>%
+    out_dat = out %>%
       transform(fct_err = TV - system_tv$tv[match(day, system_tv$day)]) %>%
+      na.omit
+    out = out_dat %>%
       subset(select = -day) %>%
-      na.omit %>%
       as_task_regr('fct_err', id = id)
+    list(task = out, dates = out_dat$day)
   } else {
     out %>%
       transform(tv_obs = system_tv$tv[match(day, system_tv$day)]) %>%
@@ -183,8 +185,9 @@ station_obs = merge(nysm_obs, asos_obs, all = T)
 
 
 selected_sites = readRDS('results/select_stations/selected_sites.rds')
-# system_tv_sites = c('NYC', 'LGA')
-system_tv = get_combined_tv(selected_sites$'3B')
+system_tv = get_combined_tv(selected_sites$'3B') %>%
+  # not training on 2025 data
+  subset(day < '2025-01-01')
 
 # predict daily value (effective temp) instead of TV
 # system_eff_tmp = get_combined_eff_tmp(system_tv_sites)
@@ -230,12 +233,13 @@ drf = LearnerRegrDrf$new()
 drf$param_set$set_values(num.trees = to_tune(1, 2000),
                          sample.fraction = to_tune(0.1, 1),
                          mtry.ratio = to_tune(0, 1),
+                         honesty = to_tune(),
                          honesty.fraction = to_tune(.5, .8),
                          honesty.prune.leaves = to_tune(),
                          ci.group.size = 1,
                          num.threads = 1)
 drf_at = auto_tuner(
-    tuner = tnr("random_search"),
+    tuner = tnr('random_search'),
     learner = drf, 
     resampling = rsmp('block_cv'),
     measure = msr('regr.crps'),
@@ -261,6 +265,7 @@ bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 saveRDS(bres, 'benchmarks.rds')
 
 forecast_tv_tasks2 = lapply(0:7, prepare_tv_task, predict_error = TRUE)
+forecast_tv_tasks3 = lapply(0:7, prepare_tv_task, predict_error = TRUE)
 bgrid = benchmark_grid(
     tasks = forecast_tv_tasks2,
     # learners = ngr,
@@ -286,15 +291,83 @@ future::plan('multicore', workers = 4)
 models = lapply(0:7, function(days_ahead) {
   print(days_ahead)
   drf_at = auto_tuner(
-      tuner = tnr("random_search"),
+      tuner = tnr('random_search'),
       learner = drf, 
       resampling = rsmp('block_cv'),
       measure = msr('regr.crps'),
       term_evals = 10,
       store_tuning_instance = FALSE
   )
-  drf_at$train(forecast_tv_tasks2[[days_ahead + 1]])
+  progressr::with_progress(drf_at$train(forecast_tv_tasks2[[days_ahead + 1]]))
   drf_at
 })
+saveRDS(models, 'results/brownsville/models.rds')
 
 # now forecast 2025 values
+
+gefs_0p25_3day = read_nwp_nc('results/process_nwp_data/2025_gefs_0p25_3day_wmean.nc')
+gefs_0p5_3day = read_nwp_nc('results/process_nwp_data/2025_gefs_0p5_3day_wmean.nc')
+gefs_tv = read_nwp_nc('results/process_nwp_data/2025_gefs_tv.nc')
+system_tv = get_combined_tv(selected_sites$'3B') %>%
+  # not training on 2025 data
+  subset(day > '2025-01-01')
+
+forecast_tv_2025 = lapply(0:7, prepare_tv_task, predict_error = TRUE)
+
+pred_list = lapply(0:7, function(i) {
+  models[[i + 1]]$predict(forecast_tv_2025[[i + 1]]$task)
+})
+
+
+# save forecasts
+preds = 0:7 %>%
+  lapply(function(i) {
+    pred_err = unlist(pred_list[[i + 1]]$distr$getParameterValue('mean'))
+    gefs_fct = forecast_tv_2025[[i + 1]]$task$data()$TV
+    mean = unlist(pred_list[[i + 1]]$distr$getParameterValue('mean'))
+    # the 12pm from the netcdf files shows up here as 0.5!
+    dates = forecast_tv_2025[[i + 1]]$dates %>%
+      as.integer %>%
+      as.Date
+    data.frame(date = dates - i,
+               days_ahead = i,
+               truth = gefs_fct - pred_list[[i + 1]]$truth,
+               pred_mean = gefs_fct - pred_err,
+               pred_sd = unlist(pred_list[[i + 1]]$distr$getParameterValue('sd'))) %>%
+      # fill missing forecasts
+      merge(data.frame(days_ahead = 0:7))
+  }) %>%
+  do.call(rbind, .) %>%
+  transform(lower_95ci = pred_mean - 1.96 * pred_sd,
+            upper_95ci = pred_mean + 1.96 * pred_sd) %>%
+  transform(forecast_made = date, forecast_for = date + days_ahead) %>%
+  subset(select = c('forecast_made', 'forecast_for', 'days_ahead', 'truth',
+                    'pred_mean', 'pred_sd', 'lower_95ci', 'upper_95ci'))
+
+preds = preds[order(preds$forecast_made, preds$days_ahead), ]
+for (v in c('pred_mean', 'pred_sd', 'lower_95ci', 'upper_95ci')) preds[, v] = round(preds[, v], 1)
+
+write.csv(preds, 'brownsville_forecasts.csv', row.names = FALSE)
+
+
+# make plots of true and forecast TVs
+library(ggplot2)
+
+system_tv3 = as.list(preds$forecast_made) %>%
+  lapply(function(x) {
+    system_tv %>%
+      subset(day >= x & day <= x + 7) %>%
+      transform(forecast_made = x,
+                days_ahead = as.integer(day - x))
+  }) %>%
+  do.call(rbind, .)
+
+png('brownsville_forecasts.png', width = 1500, height = 1000, res = 120)
+ggplot(preds, aes(x = forecast_for, y = pred_mean)) +
+  geom_ribbon(aes(ymin = lower_95ci, ymax = upper_95ci), fill = "#66666666") +
+  geom_line() +
+  geom_line(aes(x = day, y = tv), system_tv3, color = 'red') +
+  ylim(min(preds$lower_95ci), max(preds$upper_95ci)) +
+  xlab('Date') + ylab('Brownsville-specific TV (network 3B)') +
+  facet_wrap(~forecast_made, scales = 'free_x')
+dev.off()
