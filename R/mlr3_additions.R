@@ -176,6 +176,115 @@ LearnerRegrRangerDist = R6::R6Class(
   )
 )
 
+# RF-GLS requires some extra code for distributional regression
+rfgls_get_leaf_members = function(fit, x, tree) {
+  node_ind = 1
+  s_ind = fit$P_matrix[, tree] + 1
+  s = fit$X[s_ind,, drop = FALSE] # the sample
+  with(fit$RFGLS_object, {
+    # ldaugher is 0 for leaf nodes
+    while (ldaughter[node_ind, tree]) {
+      node_mbest = mbest[node_ind, tree]
+      node_upper = upper[node_ind, tree]
+      x_l = x[node_mbest] <= node_upper
+      tryCatch(s[, node_mbest], error = function(e) {
+        print(head(s))
+        print(dim(s))
+        print(node_mbest)
+      })
+      s_l = s[, node_mbest] <= node_upper
+      keep = if (x_l) s_l else !s_l
+      s_ind = s_ind[keep]
+      s = s[keep,, drop = FALSE]
+      if (x_l) {
+        node_ind = ldaughter[node_ind, tree]
+      } else {
+        node_ind = rdaughter[node_ind, tree]
+      }
+    }
+    fit$y[s_ind, ]
+  })
+}
+
+.predict_rfgls_distr = function(fit, newdata) {
+  ntrees = ncol(fit$P_matrix)
+  leaves = 1:ntrees %>%
+    lapply(function(tree) rfgls_get_leaf_members(fit, newdata, tree)) %>%
+    unlist
+  c(mean = mean(leaves), sd = sd(leaves))
+}
+
+predict_rfgls_distr = function(fit, newdata) {
+  newdata %>%
+    apply(1, function(x) .predict_rfgls_distr(fit, x)) %>%
+    t
+}
+
+LearnerRegrRfgls = R6::R6Class(
+  "LearnerRegrRfgls",
+  inherit = LearnerRegr,
+  public = list(
+    initialize = function() {
+      param_set = paradox::ps(
+          nrnodes             = paradox::p_int(default = NULL, lower = 1L, special_vals = list(NULL), tags = "train"),
+          nthsize             = paradox::p_int(default = NULL, lower = 1L, special_vals = list(NULL), tags = "train"),
+          mtry                = paradox::p_int(lower = 1L, special_vals = list(NULL), tags = "train"),
+          mtry.ratio          = paradox::p_dbl(lower = 0, upper = 1, tags = "train"),
+          ntree               = paradox::p_int(1L, default = 500L, tags = c("train", "predict", "hotstart")),
+          h                   = paradox::p_int(1L, default = 1L, tags = "train"),
+          lags                = paradox::p_int(0L, default = 1L, tags = "train"),
+          lag_params          = paradox::p_uty(default = 0.5, tags = "train"),
+          param_estimate      = paradox::p_lgl(default = FALSE, tags = "train"),
+          verbose             = paradox::p_lgl(default = FALSE, tags = c("train", "predict"))
+      )
+      # param_set$set_values(xval = 10L)
+      super$initialize(
+        id = "regr.rfgls",
+        feature_types = c("logical", "integer", "numeric", "factor", "ordered"),
+        predict_types = "distr",
+        packages = "RandomForestsGLS",
+        param_set = param_set,
+        properties = c("missings"),
+        label = "Non-homogeneous Gaussian Regression"
+      )
+    }
+  ),
+  private = list(
+    .train = function(task) {
+      pv = self$param_set$get_values(tags = "train")
+      pv = mlr3learners:::convert_ratio(pv, "mtry", "mtry.ratio", length(task$feature_names))
+      if (!is.null(pv$lags)) {
+        pv$lag_params = rep(.5, pv$lags)
+        pv$lags = NULL
+      }
+      mlr3misc::invoke(
+          RandomForestsGLS::RFGLS_estimate_timeseries,
+          y = as.matrix(task$data(cols = task$target_names)),
+          X = as.matrix(task$data(cols = task$feature_names)),
+          .args = pv
+      )
+      # RFGLS_estimate_spatial(coords, y, X, param_estimate = TRUE, verbose = TRUE)
+      # coords = cbind(as.integer(task$extra_args$dates), 0)
+      # mlr3misc::invoke(
+      #     RandomForestsGLS::RFGLS_estimate_spatial,
+      #     coords,
+      #     y = as.matrix(task$data(cols = task$target_names)),
+      #     X = as.matrix(task$data(cols = task$feature_names)),
+      #     .args = pv
+      # )
+    },
+    .predict = function(task) {
+      pv = self$param_set$get_values(tags = "predict")
+      newdata = task$data(cols = task$feature_names)
+      pred = predict_rfgls_distr(self$model, newdata)
+      # need to wrap in a `VectorDistribution` (see `LearnerRegr`)
+      distrs = as.data.frame(pred) %>%
+        distr6::VectorDistribution$new(distribution = "Normal", params = .)
+      list(distr = distrs)
+    }
+  )
+)
+
 PipeOpSubtractColumn = R6::R6Class('PipeOpSubtractColumn',
   inherit = mlr3pipelines::PipeOpTargetTrafo,
   public = list(
