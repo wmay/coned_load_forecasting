@@ -29,8 +29,8 @@ library(mlr3tuningspaces)
 library(mlr3temporal)
 source('R/load_data.R')
 source('R/coned_tv.R')
-source('R/mlr3_additions.R') # block CV, mean pinball loss, etc.
 source('R/mlr3_distr.R')
+source('R/mlr3_additions.R') # block CV, mean pinball loss, etc.
 source('R/forecast_dataset.R')
 
 # see notes in `?benchmark` and `?mlr_tuners_random_search`
@@ -97,9 +97,17 @@ gefs_tv_members = read_mdim('results/process_nwp_data/gefs_tv_members.nc')
 # works, but many warnings:
 # read_stars('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
 # this will fail if some variables have dimensions in a different order!!
-gefs_0p25_3day = read_mdim('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
-gefs_0p5_3day = read_mdim('results/process_nwp_data/gefs_0p5_3day_wmean.nc')
-gefs_tv = read_mdim('results/process_nwp_data/gefs_tv.nc')
+read_nwp_nc = function(f) {
+  out = read_mdim(f)
+  # GEFS reports longitude in a non-standard way, must be corrected to work with
+  # other tools
+  attr(out, 'dimensions')$longitude$offset =
+    attr(out, 'dimensions')$longitude$offset - 360
+  out
+}
+gefs_0p25_3day = read_nwp_nc('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
+gefs_0p5_3day = read_nwp_nc('results/process_nwp_data/gefs_0p5_3day_wmean.nc')
+gefs_tv = read_nwp_nc('results/process_nwp_data/gefs_tv.nc')
 
 get_valid_day = function(nc, days_ahead) {
   # time is generally read by R as a date, due to the 1 day differences
@@ -109,53 +117,55 @@ get_valid_day = function(nc, days_ahead) {
 # get values from stars object at the centroid of a network
 wgs84 = 4326
 networks = readRDS('results/maps/coned_networks_cleaned.rds')
-brownsville = networks[3, ] %>%
-  st_centroid %>%
-  st_transform(wgs84)
 
 # note that the day returned here is the valid day
-extract_values = function(nc, days_ahead) {
-  points = merge(brownsville,
-                 data.frame(time = get_valid_day(nc, 0)))
-  out = nc %>%
+extract_values = function(nc, network, days_ahead) {
+  network_centroid = networks %>%
+    subset(id == network) %>%
+    st_centroid %>%
+    st_transform(wgs84) %>%
+    merge(data.frame(time = attr(nc, 'dimensions')$time$values))
+  nc %>%
     dplyr::slice('edt9pm_day', days_ahead + 1) %>%
-    st_extract(points, bilinear = TRUE, time_column = 'time') %>%
+    st_extract(network_centroid, bilinear = TRUE, time_column = 'time') %>%
     transform(day = time + days_ahead) %>%
     as.data.frame %>%
     subset(select = -c(time, Shape))
 }
 
 # add observed effective temps to short-term TV forecasts
-fill_incomplete_tv = function(tv, day, days_ahead) {
+fill_incomplete_tv = function(tv, day, network, days_ahead) {
+  system_eff_tmp = get_combined_eff_tmp(selected_sites[[network]])
   if (days_ahead == 1) {
-    tv + .1 * system_eff_tmp$tv[match(day - 2, system_eff_tmp$day)]
+    tv + .1 * system_eff_tmp$eff_temp[match(day - 2, system_eff_tmp$day)]
   } else if (days_ahead == 0) {
-    tv + .2 * system_eff_tmp$tv[match(day - 1, system_eff_tmp$day)] +
-      .1 * system_eff_tmp$tv[match(day - 2, system_eff_tmp$day)]
+    tv + .2 * system_eff_tmp$eff_temp[match(day - 1, system_eff_tmp$day)] +
+      .1 * system_eff_tmp$eff_temp[match(day - 2, system_eff_tmp$day)]
   }
 }
 
-prepare_tv_task = function(days_ahead = 2, predict_error = TRUE) {
+prepare_tv_task = function(network, days_ahead, predict_error = TRUE) {
   # Note: netcdf files use forecast day, while `system_tv` uses valid day. Must
   # be consistent!
-  out_0p25 = extract_values(gefs_0p25_3day, days_ahead) %>%
+  out_0p25 = extract_values(gefs_0p25_3day, network, days_ahead) %>%
     subset(select = -eff_temp) # 3-day eff_temp is same as TV
   # sometimes soilw is all NA? for now just skip it if so
   if (all(is.na(out_0p25$soilw))) {
     warning('All soilw values are missing')
     out_0p25$soilw = NULL
   }
-  out_0p5 = extract_values(gefs_0p5_3day, days_ahead) 
-  out_tv = extract_values(gefs_tv, days_ahead) 
+  out_0p5 = extract_values(gefs_0p5_3day, network, days_ahead)
+  out_tv = extract_values(gefs_tv, network, days_ahead)
   # For days_ahead < 2, need to add observed (past) portion of TV to the
   # forecast portion. TV_sd is correct though, since observations have 0 sd
   if (days_ahead < 2) {
-    out_tv$TV = with(out_tv, fill_incomplete_tv(TV, day, days_ahead))
+    out_tv$TV = with(out_tv, fill_incomplete_tv(TV, day, network, days_ahead))
   }
   out = merge(out_0p25, out_0p5, by = 'day') %>%
     merge(out_tv, by = 'day') %>%
     transform(doy = as.POSIXlt(day)$yday)
-  id = paste0('Forecast TV ', days_ahead)
+  id = paste('TV', network, days_ahead, sep = '_')
+  system_tv = get_combined_tv(selected_sites[[network]])
   if (predict_error) {
     # Predict the GEFS forecast error instead of directly predicting TV
     out %>%
@@ -194,20 +204,16 @@ asos_obs = get_hourly_asos_data(7:21) %>%
 station_obs = merge(nysm_obs, asos_obs, all = T)
 
 
-# selected_sites = readRDS('results/select_stations/selected_sites.rds')
+selected_sites = readRDS('results/select_stations/selected_sites.rds')
 # system_tv_sites = readRDS('results/select_stations/system_results.rds')$stids
 # system_tv_sites = c("BKNYRD", "BKMAPL", "QNDKIL", "JFK", "SIFKIL", "LGA",
 #                     "QNSOZO", "MHMHIL")
-system_tv_sites = c('NYC', 'LGA')
-system_tv = get_combined_tv(system_tv_sites)
+# system_tv_sites = c('NYC', 'LGA')
+# system_tv = get_combined_tv(system_tv_sites)
 # only 400 of these, clearly I should collect more weather data for this step.
 # Note that this data is only May-September (technically April 29th)
 
-gefs = read_ncdf('data/gefs_nick.nc')
-
-# predict daily value (effective temp) instead of TV
-system_eff_tmp = get_combined_eff_tmp(system_tv_sites)
-# only 400 of these, clearly I should collect more weather data for this step
+# gefs = read_ncdf('data/gefs_nick.nc')
 
 
 # # get baseline accuracies-- must make sure to use exact same testing data!!
@@ -239,8 +245,7 @@ system_eff_tmp = get_combined_eff_tmp(system_tv_sites)
 # 6   7 3.236689 4.133973
 
 
-
-# I think the plan is that we run this benchmark over all the models
+# Models
 
 ngr = LearnerRegrNGR$new()
 
@@ -263,6 +268,7 @@ drf = LearnerRegrDrf$new()
 drf$param_set$set_values(num.trees = to_tune(1, 2000),
                          sample.fraction = to_tune(0.1, 1),
                          mtry.ratio = to_tune(0, 1),
+                         honesty = to_tune(),
                          honesty.fraction = to_tune(.5, .8),
                          honesty.prune.leaves = to_tune(),
                          ci.group.size = 1,
@@ -276,18 +282,20 @@ drf_at = auto_tuner(
 )
 # system.time(drf_at$train(forecast_tv_tasks[[6]]))
 
-# rfgls = LearnerRegrRfgls$new()
+rfgls = LearnerRegrRfgls$new()
 # rfgls$param_set$set_values(param_estimate = TRUE, ntree = 100, mtry = 3, nthsize = 16, h = 1, lags = 1)
-# rfgls$param_set$set_values(param_estimate = TRUE, mtry.ratio = to_tune(0, 1),
-#                            ntree = to_tune(1, 500), nthsize = to_tune(8, 20),
-#                            h = 1, lags = to_tune(1, 2))
-# rfgls_at = auto_tuner(
-#     tuner = tnr("random_search"),
-#     learner = rfgls, 
-#     resampling = rsmp('block_cv', folds = 3),
-#     measure = msr('regr.crps'),
-#     term_evals = 5
-# )
+# I have to restrict the ranges of some of these compared to the other models,
+# because this takes so long to fit
+rfgls$param_set$set_values(param_estimate = TRUE, mtry.ratio = to_tune(0, 1),
+                           ntree = to_tune(1, 500), nthsize = to_tune(10, 20),
+                           h = 1, lags = to_tune(1, 2))
+rfgls_at = auto_tuner(
+    tuner = tnr("random_search"),
+    learner = rfgls,
+    resampling = rsmp('block_cv', folds = 4),
+    measure = msr('regr.crps'),
+    term_evals = 5
+)
 
 
 
@@ -296,6 +304,16 @@ drf_at = auto_tuner(
 # run the inner loop in parallel and the outer loop sequentially
 future::plan(list('sequential', 'multicore'), workers = 4)
 # future::plan("sequential")
+
+benchmark_tasks = rand_networks %>%
+  lapply(function(net) {
+    lapply(0:7, function(i) {
+      print(net)
+      print(i)
+      prepare_tv_task(net, i, predict_error = TRUE)
+    })
+  }) %>%
+  do.call(c, .) # put them all in the same list
 
 # benchmark methods, first predicting the result directly, then predicting the
 # GEFS forecast error  
@@ -309,10 +327,19 @@ system.time(bres <- progressr::with_progress(benchmark(bgrid)))
 bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 saveRDS(bres, 'benchmarks.rds')
 
-forecast_tv_tasks2 = lapply(0:7, prepare_tv_task, predict_error = TRUE)
+benchmark_tasks = rand_networks %>%
+  lapply(function(net) {
+    lapply(0:7, function(i) {
+      print(net)
+      print(i)
+      prepare_tv_task(net, i, predict_error = TRUE)
+    })
+  }) %>%
+  do.call(c, .) # put them all in the same list
+# forecast_tv_tasks2 = lapply(0:7, prepare_tv_task, predict_error = TRUE)
 bgrid = benchmark_grid(
-    tasks = forecast_tv_tasks2,
-    learners = c(ngr, rangerdist_at, drf_at),
+    tasks = benchmark_tasks,
+    learners = c(ngr, rangerdist_at, drf_at, rfgls_at),
     resamplings = rsmp('forecast_holdout')
 )
 system.time(bres2 <- progressr::with_progress(benchmark(bgrid)))
@@ -322,19 +349,32 @@ bres2$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 # bres$aggregate(c(msr('regr.crps'), msr('regr.mae')))
 # bres2$aggregate(c(msr('regr.crps'), msr('regr.mae')))
 
-# found it!-- small number (1?) of NaN in the prediction matrix
 
-#                id    class lower upper nlevels        default     value
-#            <char>   <char> <num> <num>   <num>         <list>    <list>
-# 1:        nrnodes ParamInt     1   Inf     Inf         [NULL]    [NULL]
-# 2:        nthsize ParamInt     1   Inf     Inf         [NULL]         8
-# 3:           mtry ParamInt     1   Inf     Inf <NoDefault[0]>    [NULL]
-# 4:     mtry.ratio ParamDbl     0     1     Inf <NoDefault[0]> 0.3185942
-# 5:          ntree ParamInt     1   Inf     Inf            500       314
-# 6:              h ParamInt     1   Inf     Inf              1         1
-# 7:           lags ParamInt     0   Inf     Inf              1         1
-# 8: param_estimate ParamLgl    NA    NA       2          FALSE      TRUE
-# 9:        verbose ParamLgl    NA    NA       2          FALSE    [NULL]
+# First step-- model selection
+
+# It'd take too long to run this on all networks and lead times. So I'm randomly
+# selecting a few, running the benchmarks, then choosing whichever model
+# performs best on average
+
+set.seed(123)
+rand_networks = sample(networks$id, 10, replace = TRUE)
+rand_days = sample(0:7, 10, replace = TRUE)
+
+benchmark_tasks = mapply(prepare_tv_task, rand_networks, rand_days,
+                         MoreArgs = list(predict_error = TRUE))
+bgrid = benchmark_grid(
+    tasks = benchmark_tasks,
+    learners = c(ngr, rangerdist_at, drf_at, rfgls_at),
+    resamplings = rsmp('forecast_holdout')
+)
+system.time(bres3 <- progressr::with_progress(benchmark(bgrid)))
+bres3$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+extract_inner_tuning_results(bres3)
+
+# does one stand out as best?
+bres3$aggregate(msr('regr.crps')) %>%
+  aggregate(regr.crps ~ learner_id, FUN = mean, data = .)
+
 
 # rfgls = LearnerRegrRfgls$new()
 # rfgls$param_set$set_values(param_estimate = TRUE, ntree = 314,
@@ -373,8 +413,8 @@ extract_inner_tuning_results(bres)
 
 # get a matrix of GEFS TV forecasts
 get_gefs_samples = function(nc, lon = 3, lat = 4, days_ahead = 2) {
-  # when read by `read_mdim` time values are read as dates despite having a time
-  # as well
+  # When read by `read_mdim` time values are read as dates despite having a time
+  # as well. However the numeric date will have a fractional component!
   dates = attr(nc, 'dimensions')$time$values + days_ahead
   # days ahead starts at 0 in the array
   # if (days_ahead < 2) stop('TV only available starting day 2')
