@@ -1,11 +1,10 @@
 '''Download and organize NWP forecasts.
 '''
 
-import os
+import os, glob, dask
 os.chdir('..')
 # https://docs.xarray.dev/en/stable/user-guide/dask.html#reading-and-writing-data
 os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
-import glob
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -92,134 +91,6 @@ def make_collection_args(DATES, fxx, model, products, search):
         args_list.append(args)
     return args_list
 
-# tools for reading the files once downloaded
-import dask, cfgrib, warnings
-import dask.array as da
-from nwpdownload.nwppath import NwpPath
-from nwpdownload.xarray import merge_nwp_variables, append_level_to_repeated_varnames
-
-def get_filter_by_keys(arr):
-    '''Given an xarray DataArray, get appropriate filter_by_keys.
-    '''
-    # from each variable, grab shortName, typeOfLevel, and level (if present)
-    filter_by_keys = {}
-    attrs = arr.attrs
-    filter_by_keys['shortName'] = attrs['GRIB_shortName']
-    if 'GRIB_typeOfLevel' in attrs.keys():
-        filter_by_keys['typeOfLevel'] = attrs['GRIB_typeOfLevel']
-        # that's probably good-- no reason to separate data by level
-    return filter_by_keys
-
-class CollectionReader(NwpCollection):
-    '''Methods to open an NwpCollection in xarray using dask.
-    '''
-
-    def _array_from_coords(self, coords, var_conf):
-        '''Get grib array from run/fxx/member coordinates.
-        '''
-        fcoords = NwpPath(self.DATES[coords[0]], model=self.model, product=self.product,
-                          fxx=self.fxx[coords[1]], member=self.members[coords[2]],
-                          save_dir=self.save_dir)
-        grib_path = fcoords.get_localFilePath()
-        backend_kwargs = {'filter_by_keys': var_conf['filter_by_keys'],
-                          'indexpath': ''}
-        try:
-            ds = xr.open_dataset(grib_path, engine='cfgrib',
-                                 decode_timedelta=True,
-                                 backend_kwargs=backend_kwargs)
-            out = ds[var_conf['name']].values
-        except Exception as e:
-            # convert the error to a warning, and return an empty array
-            warnings.warn(str(e))
-            out = np.full(var_conf['shape'], np.nan)
-        # check that the array has the correct shape
-        if out.shape != var_conf['shape']:
-            warnings.warn('Array has incorrect shape')
-            out = np.full(var_conf['shape'], np.nan)
-        return out
-
-    def _members_arr(self, coords, var_conf):
-        return np.stack([ self._array_from_coords(coords + (i, ), var_conf)
-                          for i in range(len(self.members)) ])
-
-    # def _fxx_arr(self, coords, var_conf):
-    #     return np.stack([ self._members_arr(coords + (i, ), var_conf)
-    #                       for i in range(len(self.fxx)) ])
-
-    def _fxx_arr_map(self, var_conf, block_id=None, block_info=None):
-        # print(block_id)
-        out = np.stack([ self._members_arr((block_id[0], i), var_conf)
-                         for i in range(len(self.fxx)) ])
-        return np.expand_dims(out, 0)
-
-    # Rather than create a dask array for each file, create one for each
-    # forecast run. This is much more manageable for the dask scheduler.
-    def _delayed_collection_arr(self, var_conf):
-        coords = {'time': self.DATES, 'step': self.fxx, 'number': self.members}
-        # print(var_conf)
-        coords.update(var_conf['dims'])
-        fxx_shape = (len(self.fxx), len(self.members)) + var_conf['shape']
-        # use `map_blocks` instead of `stack`
-        n_runs = len(self.DATES)
-        arr = da.map_blocks(self._fxx_arr_map, var_conf,
-                            dtype=var_conf['dtype'],
-                            chunks=((1, ) * n_runs, *fxx_shape),
-                            meta=np.array((), dtype=var_conf['dtype']))
-        return xr.DataArray(arr, coords=coords, name=var_conf['name'])
-
-    def open_datasets(self):
-        # read a single grib2 file to get coordinates and attributes
-        # Getting info about the dataset--
-        # - array shape (x/y coordinates)
-        # - variable info for filter_by_keys
-        # - attributes
-        # f0 = NwpPath(self.DATES[0], model=self.model, product=self.product, fxx=self.fxx[0],
-        #              member=self.members[0], save_dir='data/nwpdownload')
-        f0 = NwpPath(self.DATES[0], model=self.model, product=self.product, fxx=self.fxx[0],
-                     member=self.members[0], save_dir=self.save_dir)
-
-        # f0 = dask.delayed(NwpPath)(self.DATES[0], model=self.model,
-        #                            product=self.product, fxx=self.fxx[0],
-        #                            member=self.members[0],
-        #                            save_dir=self.save_dir)
-        # f0.compute()
-        grib_path = f0.get_localFilePath()
-        # to make sure this reads from the correct location, must use
-        # `dask.delayed`
-        # ds_list = cfgrib.open_datasets(grib_path, decode_timedelta=True)
-        ds_list = dask.delayed(cfgrib.open_datasets)(grib_path,
-                                                     decode_timedelta=True)
-        ds_list = ds_list.compute()
-        attr_dict = {}
-        outer_list = []
-        for ds in ds_list:
-            conf_list = []
-            for v in ds.data_vars:
-                conf = {'name': v}
-                arr = ds[v]
-                conf['filter_by_keys'] = get_filter_by_keys(arr)
-                conf['shape'] = arr.shape
-                conf['dtype'] = arr.dtype
-                dim_names = list(arr.dims)
-                conf['dims'] = { dim: arr[dim] for dim in dim_names }
-                conf_list.append(conf)
-                attr_dict[v] = arr.attrs
-            outer_list.append(conf_list)
-        out_list = []
-        # as long as we get data separately for each vertical level, we can
-        # easily merge the arrays. But I haven't guaranteed that yet!
-        for conf_list in outer_list:
-            arrs = []
-            for conf in conf_list:
-                arr = self._delayed_collection_arr(conf)
-                arr.attrs = attr_dict[arr.name]
-                # print(arr)
-                arrs.append(arr)
-            ds = xr.merge(arrs, combine_attrs='drop_conflicts')
-            out_list.append(ds)
-        return out_list
-
-
 # Some common variables
 
 # speed this up immensely with the help of a cluster running kubernetes
@@ -263,6 +134,12 @@ nyc_extent = (285.5, 286.5, 40, 41.5)
 # TV backfill-- f00, f03 (all runs, TV ensemble members -- 1 collection)
 # extra backfill-- f06 (00/08/18utc, missing f00 mean -- 1? collection)
 
+# When can I get these? For 06Z,
+# - 0p25 avg, 7:08
+# - 0p25 members, 7:07
+# - 0p5 avg, 7:08
+# - 0p5b members, 7:07
+
 # parameters from Rasp and Lerch 2018
 gefs_params = pd.read_csv('config/gefs.csv')
 gefs_params = gefs_params.loc[~pd.isnull(gefs_params['search']), :]
@@ -271,12 +148,12 @@ gefs_searches = gefs_params['search'].unique()
 year_runs = [ pd.date_range(start=f"{y}-04-01 00:00", periods=183 * 4,
                             freq='6h').to_series() for y in range(2021, 2025) ]
 all_runs = pd.concat(year_runs).index
-runs_12utc = all_runs[np.arange(len(all_runs)) % 4 == 2]
-runs_not_12utc = all_runs[np.arange(len(all_runs)) % 4 != 2]
+runs_06utc = all_runs[np.arange(len(all_runs)) % 4 == 1]
+runs_not_06utc = all_runs[np.arange(len(all_runs)) % 4 != 1]
 gefs_fxx_fct = range(3, 24 * 8, 3) # out to 8 days ahead
 
 # f03+
-gefs_fct_args_list = make_collection_args(runs_12utc, gefs_fxx_fct,
+gefs_fct_args_list = make_collection_args(runs_06utc, gefs_fxx_fct,
                                           'gefs',
                                           ['atmos.25', 'atmos.5', 'atmos.5b'],
                                           search=gefs_searches)
@@ -284,7 +161,7 @@ gefs_fct_args_list = make_collection_args(runs_12utc, gefs_fxx_fct,
 gefs_tv_fct = {
     'model': 'gefs',
     'product': 'atmos.25',
-    'DATES': runs_12utc,
+    'DATES': runs_06utc,
     'fxx': gefs_fxx_fct,
     'members': range(0, 31),
     'extent': nyc_extent,
@@ -304,21 +181,21 @@ gefs_tv_f00['fxx'] = [0]
 gefs_tv_f00['DATES'] = all_runs
 
 # now f03
-gefs_f03_args_list = make_collection_args(runs_not_12utc, [3],
+gefs_f03_args_list = make_collection_args(runs_not_06utc, [3],
                                           'gefs',
                                           ['atmos.25', 'atmos.5', 'atmos.5b'],
                                           search=gefs_searches)
 gefs_tv_f03 = gefs_tv_f00.copy()
 gefs_tv_f03['fxx'] = [3]
-gefs_tv_f03['DATES'] = runs_not_12utc
+gefs_tv_f03['DATES'] = runs_not_06utc
 
 # now f06 (a few variables missing from the f00 files)
-gefs_f00_products = find_variable_product(runs_not_12utc, [0], 'gefs',
+gefs_f00_products = find_variable_product(runs_not_06utc, [0], 'gefs',
                                           ['atmos.25', 'atmos.5', 'atmos.5b'],
                                           gefs_searches, member=0)
 # what's missing from f00?
 f00_missing = [ v for v in gefs_searches if gefs_f00_products[v] is None ]
-gefs_f06_args_list = make_collection_args(runs_not_12utc, [6],
+gefs_f06_args_list = make_collection_args(runs_not_06utc, [6],
                                           'gefs',
                                           ['atmos.25', 'atmos.5', 'atmos.5b'],
                                           search=f00_missing)
@@ -329,7 +206,7 @@ gefs_all_collections_args = gefs_fct_args_list + [gefs_tv_fct] + \
 
 gefs_collections = []
 for collection_args in gefs_all_collections_args:
-    collection = CollectionReader(**collection_args, save_dir='/mnt/nwpdownload')
+    collection = NwpCollection(**collection_args, save_dir='/mnt/nwpdownload')
     gefs_collections.append(collection)
 
 # how much data is all of this?
@@ -343,11 +220,8 @@ from humanize import naturalsize
 naturalsize(sum(collection_sizes))
 
 for i, collection in enumerate(gefs_collections):
-    if 1 == 3:
-        continue
     print(f'Starting collection {i+1} of {len(gefs_collections)}')
     collection.download()
-
 
 
 # can use this to remove troublesome incomplete files
@@ -395,7 +269,7 @@ env = {'HDF5_USE_FILE_LOCKING': 'FALSE',
        # files
        'EXTRA_PIP_PACKAGES': 'eccodes==2.38 typing_extensions netCDF4 git+https://github.com/ASRCsoft/nwpdownload'}
 
-spec = make_cluster_spec(name='wmay-dask', n_workers=10,
+spec = make_cluster_spec(name='wmay-dask', n_workers=12,
                          resources=worker_resources, env=env)
 scheduler = spec['spec']['scheduler']['spec']['containers'][0]
 worker = spec['spec']['worker']['spec']['containers'][0]
@@ -410,7 +284,7 @@ cluster = KubeCluster(custom_cluster_spec=spec, port_forward_cluster_ip=True)
 # cluster = KubeCluster(name='wmay-dask', n_workers=10, env=env,
 #                       port_forward_cluster_ip=True)
 cluster.dashboard_link
-cluster.wait_for_workers(10)
+cluster.wait_for_workers(12)
 
 client = Client(cluster)
 
@@ -447,9 +321,7 @@ for c in gefs_collections:
     out_path = '/mnt/nwpdownload/' + get_file_name(c)
     print(f'writing to {out_path}')
     ds_list = c.open_datasets()
-    # print(ds_list)
     ds_c = merge_nwp_variables(ds_list)
-    print(ds_c)
     encoding = { var: comp for var in ds_c.data_vars }
     # When using the dask cluster, there seem to be contradictory expectations
     # about where the netcdf is written. The only way this works is to wrap the
@@ -467,82 +339,3 @@ for c in gefs_collections:
 
 client.close()
 cluster.close()
-
-
-# second step: modify as needed
-
-# try xarray parallel reading
-
-# from herbieplus.xarray import get_nwp_paths
-
-# nwp_files = get_nwp_paths('nwp_test/gefs', 'pgrb2a', ['avg'], runs=downloader.DATES)
-
-# filters = {'typeOfLevel': 'isobaricInhPa', 'level': 500}
-# backend_kwargs = {'filter_by_keys': filters, 'indexpath': ''}
-
-# nwp_m = xr.open_mfdataset(nwp_files, concat_dim=['time', 'number', 'step'],
-#                           engine='cfgrib', decode_timedelta=True,
-#                           combine='nested', parallel=True,
-#                           backend_kwargs=backend_kwargs)
-
-
-
-# # because there are so many files, it makes more sense to aggregate them into
-# # daily files first
-# runs = []
-# for y in range(2021, 2025):
-#     y_runs = pd.date_range(start=f"{y}-04-01 12:00", periods=183, freq='D')
-#     runs.extend(list(y_runs))
-
-# params_0p5 = rasp_params.loc[np.isin(rasp_params['product'], ['atmos.5', 'atmos.5b']), :]
-# for r in runs:
-#     print(r)
-#     r_ds = open_herbie_dataset(params_0p5, 'data/herbie/gefs', ['avg'],
-#                                runs=[r])
-#     r_nc = f'results/get_nwp_data/daily_netcdf/gefs_0p5/{r:%Y%m%d}.nc'
-#     r_ds.to_netcdf(r_nc)
-#     r_ds.close()
-# gefs_0p5_files = glob.glob('results/get_nwp_data/daily_netcdf/gefs_0p5/*.nc')
-# gefs_0p5_files.sort()
-# gefs_0p5 = xr.open_mfdataset(gefs_0p5_files, decode_timedelta=True)
-# gefs_0p5.to_netcdf('results/get_nwp_data/gefs_0p5.nc')
-# gefs_0p5.close()
-
-# params_0p25 = rasp_params.loc[rasp_params['product'] == 'atmos.25', :]
-# for r in runs[136:]:
-#     print(r)
-#     r_ds = open_herbie_dataset(params_0p25, 'data/herbie/gefs', ['avg'],
-#                                runs=[r])
-#     r_nc = f'results/get_nwp_data/daily_netcdf/gefs_0p25/{r:%Y%m%d}.nc'
-#     r_ds.to_netcdf(r_nc)
-#     r_ds.close()
-# gefs_0p25_files = glob.glob('results/get_nwp_data/daily_netcdf/gefs_0p25/*.nc')
-# gefs_0p25_files.sort()
-# gefs_0p25 = xr.open_mfdataset(gefs_0p25_files, decode_timedelta=True)
-# gefs_0p25.to_netcdf('results/get_nwp_data/gefs_0p25.nc')
-# gefs_0p25.close()
-
-# have to get the 0.5 and 0.25 resolution variables separately
-# params_0p5 = rasp_params.loc[np.isin(rasp_params['product'], ['atmos.5', 'atmos.5b']), :]
-# gefs_0p5 = open_herbie_dataset(params_0p5, 'data/herbie/gefs', ['avg'])
-
-# params_0p25 = rasp_params.loc[rasp_params['product'] == 'atmos.25', :]
-# gefs_0p25 = open_herbie_dataset(params_0p25, 'data/herbie/gefs', ['avg'])
-
-# import cfgrib
-
-# x1 = cfgrib.open_datasets('data/herbie/gefs/20210401/nyc_subset_fc1be7eb__geavg.t12z.pgrb2s.0p25.f033')
-
-# x2 = cfgrib.open_datasets('data/herbie/gefs/20210401/nyc_subset_fc86e7eb__geavg.t12z.pgrb2s.0p25.f021')
-
-
-# third step: combine with rechunker -- not necessary because the data is so
-# small!
-
-# gefs_0p5_rechunker = rechunk(
-#     gefs_0p5,
-#     {'step': 16, "time": 30, "latitude": 4, "longitude": 3},
-#     "1GB",
-#     "results/get_nwp_data/gefs_0p5.zarr"
-# )
-# gefs_0p5_rechunker.execute()
