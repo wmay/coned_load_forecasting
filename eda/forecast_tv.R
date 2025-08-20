@@ -234,53 +234,72 @@ rfgls_at = auto_tuner(
 )
 
 
+# It'd take too long to run this on all networks and lead times. So I'm randomly
+# selecting a few, running the benchmarks, then choosing whichever model
+# performs best on average
 
-# rfgls specifically takes more time, so worth running in parallel
+set.seed(123)
+rand_networks = sample(networks$id, 5, replace = TRUE)
+rand_days = sample(0:7, 10, replace = TRUE)
+
+# # how long might this take?
+# t_all=prepare_tv_task_combined(rand_networks[1])
+# system.time(rangerdist$train(t_all))
+#  #   user  system elapsed 
+#  # 10.119   0.187   9.961 
+# system.time(drf$train(t_all))
+#  #   user  system elapsed 
+#  # 43.316   0.288  13.013 
+
+
+# RFGLS specifically takes more time, so worth running in parallel
 
 # run the inner loop in parallel and the outer loop sequentially
 future::plan(list('sequential', 'multicore'), workers = 4)
 # future::plan("sequential")
 
-benchmark_tasks = rand_networks %>%
-  lapply(function(net) {
-    lapply(0:7, function(i) {
-      print(net)
-      print(i)
-      prepare_tv_task(net, i, predict_error = TRUE)
-    })
-  }) %>%
-  do.call(c, .) # put them all in the same list
+# benchmark_tasks = rand_networks %>%
+#   lapply(function(net) {
+#     lapply(0:7, function(i) {
+#       print(net)
+#       print(i)
+#       prepare_tv_task(net, i, predict_error = TRUE)
+#     })
+#   }) %>%
+#   do.call(c, .) # put them all in the same list
 
-# benchmark methods, first predicting the result directly, then predicting the
-# GEFS forecast error  
-forecast_tv_tasks = lapply(0:7, prepare_tv_task, predict_error = FALSE)
-bgrid = benchmark_grid(
-    tasks = forecast_tv_tasks,
-    learners = c(ngr, rangerdist_at, drf_at),
-    resamplings = rsmp('forecast_holdout')
-)
-system.time(bres <- progressr::with_progress(benchmark(bgrid)))
-bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
-saveRDS(bres, 'benchmarks.rds')
+# tl;dr predicting the forecast error works better than predicting TV directly
 
-benchmark_tasks = rand_networks %>%
-  lapply(function(net) {
-    lapply(0:7, function(i) {
-      print(net)
-      print(i)
-      prepare_tv_task(net, i, predict_error = TRUE)
-    })
-  }) %>%
-  do.call(c, .) # put them all in the same list
-# forecast_tv_tasks2 = lapply(0:7, prepare_tv_task, predict_error = TRUE)
-bgrid = benchmark_grid(
-    tasks = benchmark_tasks,
-    learners = c(ngr, rangerdist_at, drf_at, rfgls_at),
-    resamplings = rsmp('forecast_holdout')
-)
-system.time(bres2 <- progressr::with_progress(benchmark(bgrid)))
-bres2$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
-# this one is consistently a bit better
+# # benchmark methods, first predicting the result directly, then predicting the
+# # GEFS forecast error  
+# forecast_tv_tasks = lapply(0:7, prepare_tv_task, predict_error = FALSE)
+# bgrid = benchmark_grid(
+#     tasks = forecast_tv_tasks,
+#     learners = c(ngr, rangerdist_at, drf_at),
+#     resamplings = rsmp('forecast_holdout')
+# )
+# system.time(bres <- progressr::with_progress(benchmark(bgrid)))
+# bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+# saveRDS(bres, 'benchmarks.rds')
+
+# benchmark_tasks = rand_networks %>%
+#   lapply(function(net) {
+#     lapply(0:7, function(i) {
+#       print(net)
+#       print(i)
+#       prepare_tv_task(net, i, predict_error = TRUE)
+#     })
+#   }) %>%
+#   do.call(c, .) # put them all in the same list
+# # forecast_tv_tasks2 = lapply(0:7, prepare_tv_task, predict_error = TRUE)
+# bgrid = benchmark_grid(
+#     tasks = benchmark_tasks,
+#     learners = c(ngr, rangerdist_at, drf_at, rfgls_at),
+#     resamplings = rsmp('forecast_holdout')
+# )
+# system.time(bres2 <- progressr::with_progress(benchmark(bgrid)))
+# bres2$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
+# # this one is consistently a bit better
 
 # bres$aggregate(c(msr('regr.crps'), msr('regr.mae')))
 # bres2$aggregate(c(msr('regr.crps'), msr('regr.mae')))
@@ -288,19 +307,14 @@ bres2$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 
 # First step-- model selection
 
-# It'd take too long to run this on all networks and lead times. So I'm randomly
-# selecting a few, running the benchmarks, then choosing whichever model
-# performs best on average
-
-set.seed(123)
-rand_networks = sample(networks$id, 10, replace = TRUE)
-rand_days = sample(0:7, 10, replace = TRUE)
-
-benchmark_tasks = mapply(prepare_tv_task, rand_networks, rand_days,
-                         MoreArgs = list(predict_error = TRUE))
+# benchmark_tasks = mapply(prepare_tv_task, rand_networks, rand_days,
+#                          MoreArgs = list(predict_error = TRUE))
+benchmark_tasks =
+  lapply(rand_networks, prepare_tv_task_combined, predict_error = TRUE)
 bgrid = benchmark_grid(
     tasks = benchmark_tasks,
-    learners = c(ngr, rangerdist_at, drf_at, rfgls_at),
+    # learners = c(ngr, rangerdist_at, drf_at, rfgls_at),
+    learners = c(ngr, rangerdist_at, drf_at),
     resamplings = rsmp('forecast_holdout')
 )
 system.time(bres3 <- progressr::with_progress(benchmark(bgrid)))
@@ -310,6 +324,32 @@ extract_inner_tuning_results(bres3)
 # does one stand out as best?
 bres3$aggregate(msr('regr.crps')) %>%
   aggregate(regr.crps ~ learner_id, FUN = mean, data = .)
+# ranger really beat DRF???
+
+bres3$aggregate(msr('regr.crps')) %>%
+  subset(learner_id != 'regr.ngr') %>%
+  reshape(direction = 'wide', idvar = 'task_id', timevar = 'learner_id',
+          v.names = 'regr.crps')
+# total blowout, ranger is dominating
+
+bres3$obs_loss(measures = msr('regr.crps')) %>%
+  subset(select = -distr) %>%
+  head
+
+bres3$obs_loss() %>%
+  subset(select = -distr) %>%
+  getElement('se') %>%
+  hist()
+
+bres3$obs_loss() %>%
+  subset(select = -distr) %>%
+  getElement('se') %>%
+  range()
+
+msr('regr.crps')
+
+bres3$score(measures = msr('regr.crps')) %>%
+  nrow
 
 
 # rfgls = LearnerRegrRfgls$new()
