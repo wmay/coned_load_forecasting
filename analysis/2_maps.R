@@ -99,6 +99,16 @@ row.names(networks) = networks$id
 # save this cleaned up data
 saveRDS(networks, 'results/maps/coned_networks_cleaned.rds')
 
+# save the network centroids to use for NWP interpolation later
+networks %>%
+  st_centroid %>%
+  st_transform(wgs84) %>%
+  transform(lon = st_coordinates(.)[, 'X'],
+            lat = st_coordinates(.)[, 'Y']) %>%
+  as.data.frame %>%
+  subset(select = c(id, lon, lat)) %>%
+  write.csv(file = 'results/maps/network_centroids.csv', row.names = FALSE)
+
 
 # network reference maps
 networks = st_transform(networks, web_merc)

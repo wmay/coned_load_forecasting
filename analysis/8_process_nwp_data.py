@@ -7,6 +7,7 @@ resolution.
 import os
 os.chdir('..')
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 
@@ -96,6 +97,19 @@ def get_daily_avg(ds):
     return ds.groupby('edt9pm_day').mean().sel(edt9pm_day=slice(None, 7))
 
 
+# get network centroids for interpolation
+# Would it be better to interpolate in the original NWP map projection? Since I
+# don't have those coordinates in the netcdf files, guess I won't for now
+centroids = pd.read_csv('results/maps/network_centroids.csv')
+network_coords = {
+    'network': ('network', centroids['id']),
+    # NCEP doesn't use negative longitude values
+    'longitude': ('network', centroids['lon'] + 360),
+    'latitude': ('network', centroids['lat'])
+}
+centroids_ds = xr.Dataset(coords=network_coords)
+
+
 # Let's start with the non-TV forecast data
 gefs_0p5_fct = get_all_0p5('fct')
 
@@ -113,6 +127,15 @@ gefs_0p5_anl = xr.concat([gefs_0p5_anl, gefs_0p5_fill3], dim='time').\
 
 # now connect the fct and anl datasets into a continuous -2 to +7 day dataset
 gefs_0p5 = backfill_fct(gefs_0p5_fct, gefs_0p5_anl)
+gefs_0p5 = gefs_0p5.interp(latitude=centroids_ds['latitude'],
+                           longitude=centroids_ds['longitude'],
+                           # extrapolate if needed
+                           kwargs={'fill_value': None})
+
+def nan_prop(arr):
+    '''Check to make sure we didn't get all NaN results in an array.
+    '''
+    return np.isnan(arr).sum() / arr.size
 
 # now that we have all the 0p5 data, get daily averages
 
@@ -163,6 +186,9 @@ gefs_0p25_anl = xr.concat([gefs_0p25_anl, gefs_0p25_fill3], dim='time').\
 
 # now connect the fct and anl datasets into a continuous -2 to +7 day dataset
 gefs_0p25 = backfill_fct(gefs_0p25_fct, gefs_0p25_anl)
+gefs_0p25 = gefs_0p25.interp(latitude=centroids_ds['latitude'],
+                             longitude=centroids_ds['longitude'],
+                             kwargs={'fill_value': None})
 # now that we have all the 0p25 data, get daily averages
 gefs_0p25_daily = get_daily_avg(gefs_0p25)
 # gefs_0p25_daily.to_netcdf('results/process_nwp_data/gefs_0p25_daily.nc')
@@ -200,7 +226,10 @@ gefs_atmos0p25_fct_members = gefs_atmos0p25_fct_members.assign_coords(edt_coords
 # use only 9am to 9pm
 gefs_atmos0p25_fct_members = gefs_atmos0p25_fct_members.\
     where((gefs_atmos0p25_fct_members['edt_hour'] >= 9) &
-          (gefs_atmos0p25_fct_members['edt_hour'] <= 21), drop=True)
+          (gefs_atmos0p25_fct_members['edt_hour'] <= 21), drop=True).\
+    interp(latitude=centroids_ds['latitude'],
+           longitude=centroids_ds['longitude'],
+           kwargs={'fill_value': None})
 
 gefs_fct_eff_temp = coned_eff_temp(gefs_atmos0p25_fct_members['t2m'],
                                    gefs_atmos0p25_fct_members['d2m']).\
@@ -208,7 +237,8 @@ gefs_fct_eff_temp = coned_eff_temp(gefs_atmos0p25_fct_members['t2m'],
 
 # np.isnan(gefs_fct_eff_temp).sum() / gefs_fct_eff_temp.size
 
-gefs_0p25_daily['eff_temp'] = gefs_fct_eff_temp.mean('number').transpose('edt9pm_day', 'time', 'latitude', 'longitude')
+gefs_0p25_daily['eff_temp'] = gefs_fct_eff_temp.mean('number').\
+    transpose('edt9pm_day', 'time', 'network')
 gefs_0p25_daily.to_netcdf('results/process_nwp_data/gefs_0p25_daily.nc')
 gefs_0p25_3day_wmean = get_3day_wmean(gefs_0p25_daily)
 gefs_0p25_3day_wmean.to_netcdf('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
@@ -219,7 +249,7 @@ gefs_0p25_3day_wmean.to_netcdf('results/process_nwp_data/gefs_0p25_3day_wmean.nc
 # pad with zeros to simplify the code
 padding = gefs_fct_eff_temp.isel(edt9pm_day=slice(None, 2)).copy()
 padding['edt9pm_day'] = padding['edt9pm_day'] - 2
-padding[:,:,:,:,:] = 0
+padding[:,:,:,:] = 0
 
 gefs_eff_temp = xr.concat([padding, gefs_fct_eff_temp], 'edt9pm_day')
 
@@ -231,7 +261,8 @@ gefs_tv_members = gefs_tv_members.rename('TV')
 gefs_tv_members.to_netcdf('results/process_nwp_data/gefs_tv_members.nc')
 
 gefs_tv = xr.merge([gefs_tv_members.mean('number'),
-                    gefs_tv_members.std('number').rename('TV_sd')])
+                    gefs_tv_members.std('number').rename('TV_sd')]).\
+    transpose('edt9pm_day', 'time', 'network')
 gefs_tv.to_netcdf('results/process_nwp_data/gefs_tv.nc')
 
 # # let's see how much forecast variation there is, split by forecast day
@@ -249,3 +280,11 @@ gefs_tv.to_netcdf('results/process_nwp_data/gefs_tv.nc')
 # fig, axs = plt.subplots(ncols=6)
 # for i in range(2, 8):
 #     tv.sel(est_day=i).std('number').plot(ax=axs[i - 2])
+
+
+# combine the predictors
+gefs_daily = xr.merge([gefs_0p5_daily, gefs_0p25_daily])
+gefs_daily.to_netcdf('results/process_nwp_data/gefs_daily.nc')
+
+gefs_3day_wmean = xr.merge([gefs_0p5_3day_wmean, gefs_0p25_3day_wmean, gefs_tv])
+gefs_3day_wmean.to_netcdf('results/process_nwp_data/gefs_3day_wmean.nc')

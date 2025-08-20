@@ -15,7 +15,6 @@
 #                   raphaels1 = 'https://raphaels1.r-universe.dev')
 # install.packages('distr6', repos = distr6_repos)
 setwd('..')
-library(psychrolib)
 library(magrittr)
 library(stars) # also requires ncmeta
 # install.packages('ncmeta')
@@ -27,67 +26,16 @@ library(mlr3learners)
 library(mlr3tuning)
 library(mlr3tuningspaces)
 library(mlr3temporal)
-source('R/load_data.R')
-source('R/coned_tv.R')
 source('R/mlr3_distr.R')
 source('R/mlr3_additions.R') # block CV, mean pinball loss, etc.
 source('R/forecast_dataset.R')
 
+all_eff_tmps = read.csv('results/process_station_data/eff_tmp.csv')
+all_tvs = read.csv('results/process_station_data/tv.csv')
+
 # see notes in `?benchmark` and `?mlr_tuners_random_search`
 lgr::get_logger("mlr3")$set_threshold("warn")
 lgr::get_logger("bbotk")$set_threshold("warn")
-
-get_combined_eff_tmp = function(stids) {
-  tmp_cols = paste0('tmpf.', stids)
-  dwp_cols = paste0('dwpf.', stids)
-  tmps = rowMeans(station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
-  dwps = rowMeans(station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
-  out = coned_effective_temp(station_obs$time, tmps, dwps)
-  row.names(out) = as.character(out$day)
-  out
-}
-
-# Get combined TV by averaging site dry+wet temperatures first and *then*
-# getting the daily maximum of the averaged values. This ensures that the values
-# are all taken from the same time of day
-# IMPORTANT: Can't remove holidays prior to this calculation bc they're needed for lagged values
-get_combined_tv = function(stids) {
-  tmp_cols = paste0('tmpf.', stids)
-  dwp_cols = paste0('dwpf.', stids)
-  tmps = rowMeans(station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
-  dwps = rowMeans(station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
-  out = coned_tv(station_obs$time, tmps, dwps)
-  row.names(out) = as.character(out$day)
-  out
-}
-
-# calculate effective temp from 3-hourly forecast data (requires fahrenheit)
-coned_effective_temp_3hr = function(t, temp, dwp) {
-  data.frame(time = t, temp = temp, dwp = dwp) %>%
-    subset(!is.na(temp) & !is.na(dwp)) %>%
-    transform(wetbulb = coned_wet_bulb(temp, dwp)) %>%
-    transform(eff_temp = (temp + wetbulb) / 2) %>%
-    # remove night/morning
-    transform(hour_of_day = as.integer(format(time, '%H'))) %>%
-    subset(hour_of_day >= 9 & hour_of_day <= 21) %>%
-    # get max by day
-    transform(day = as.Date(time, tz = 'EST5EDT')) %>%
-    aggregate(eff_temp ~ day, ., max, na.rm = T)
-}
-
-# ConEd's "temperature variable". `temp` and `dwp` must be in Fahrenheit
-coned_tv_nwp = function(t, temp, dwp) {
-  coned_effective_temp(t, temp, dwp) %>%
-    transform(tv = rolling_mean3(day, eff_temp, 'days', c(.7, .2, .1))) %>%
-    transform(tv = coned_round(tv, 1)) %>%
-    subset(select = c(day, tv))
-}
-
-
-# strangely `read_mdim` works fine while `read_ncdf` messes up the coordinates
-# gefs_tv = read_ncdf('results/process_nwp_data/gefs_tv2.nc')
-gefs_tv_members = read_mdim('results/process_nwp_data/gefs_tv_members.nc')
-# (this is only needed for evaluating the GEFS)
 
 # I don't know why this is such a pain to read
 # wrong dimensions:
@@ -105,18 +53,11 @@ read_nwp_nc = function(f) {
     attr(out, 'dimensions')$longitude$offset - 360
   out
 }
-gefs_0p25_3day = read_nwp_nc('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
-gefs_0p5_3day = read_nwp_nc('results/process_nwp_data/gefs_0p5_3day_wmean.nc')
-gefs_tv = read_nwp_nc('results/process_nwp_data/gefs_tv.nc')
 
 get_valid_day = function(nc, days_ahead) {
   # time is generally read by R as a date, due to the 1 day differences
   attr(nc, 'dimensions')$time$values + days_ahead
 }
-
-# get values from stars object at the centroid of a network
-wgs84 = 4326
-networks = readRDS('results/maps/coned_networks_cleaned.rds')
 
 # note that the day returned here is the valid day
 extract_values = function(nc, network, days_ahead) {
@@ -135,7 +76,8 @@ extract_values = function(nc, network, days_ahead) {
 
 # add observed effective temps to short-term TV forecasts
 fill_incomplete_tv = function(tv, day, network, days_ahead) {
-  system_eff_tmp = get_combined_eff_tmp(selected_sites[[network]])
+  system_eff_tmp = all_eff_tmps[, c('day', paste0('network.', network))]
+  names(system_eff_tmp)[2] = 'eff_temp'
   if (days_ahead == 1) {
     tv + .1 * system_eff_tmp$eff_temp[match(day - 2, system_eff_tmp$day)]
   } else if (days_ahead == 0) {
@@ -165,7 +107,8 @@ prepare_tv_task = function(network, days_ahead, predict_error = TRUE) {
     merge(out_tv, by = 'day') %>%
     transform(doy = as.POSIXlt(day)$yday)
   id = paste('TV', network, days_ahead, sep = '_')
-  system_tv = get_combined_tv(selected_sites[[network]])
+  system_tv = all_tvs[, c('day', paste0('network.', network))]
+  names(system_tv)[2] = 'tv'
   if (predict_error) {
     # Predict the GEFS forecast error instead of directly predicting TV
     out %>%
@@ -182,38 +125,31 @@ prepare_tv_task = function(network, days_ahead, predict_error = TRUE) {
   }
 }
 
+# create a task that combines lead times, as in https://doi.org/10.1002/qj.4701
+prepare_tv_task_combined = function(network, predict_error = TRUE) {
+  task = prepare_tv_task(network, 0, predict_error = predict_error)
+  task$cbind(data = data.frame(days_ahead = rep(0, task$nrow)))
+  # append the other lead times
+  for (i in 1:7) {
+    task_i = prepare_tv_task(network, i, predict_error = TRUE)
+    task_i$cbind(data = data.frame(days_ahead = rep(i, task_i$nrow)))
+    task$rbind(data = task_i$data())
+  }
+  task
+}
 
-# # set up the effective temp data
-# data_wide = readRDS('results/load_vs_weather/tv_and_load.rds')
+# strangely `read_mdim` works fine while `read_ncdf` messes up the coordinates
+# gefs_tv = read_ncdf('results/process_nwp_data/gefs_tv2.nc')
+gefs_tv_members = read_mdim('results/process_nwp_data/gefs_tv_members.nc')
+# (this is only needed for evaluating the GEFS)
 
-SetUnitSystem('SI')
-tv_vars = c('tair', 'relh')
-nysm_obs = get_combined_nc_data(tv_vars, hour_to_nc_index(7:21)) %>%
-  subset(!(is.na(tair) | is.na(relh))) %>%
-  transform(dwp = GetTDewPointFromRelHum(tair, relh / 100)) %>%
-  transform(tmpf = as_fahrenheit(tair), dwpf = as_fahrenheit(dwp)) %>%
-  subset(select = c(time, stid, tmpf, dwpf)) %>%
-  reshape(direction = 'wide', idvar = 'time', timevar = 'stid')
+gefs_0p25_3day = read_nwp_nc('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
+gefs_0p5_3day = read_nwp_nc('results/process_nwp_data/gefs_0p5_3day_wmean.nc')
+gefs_tv = read_nwp_nc('results/process_nwp_data/gefs_tv.nc')
 
-asos_obs = get_hourly_asos_data(7:21) %>%
-  transform(stid = station, time = valid_hour) %>%
-  subset(!(is.na(tmpf) | is.na(dwpf))) %>%
-  subset(select = c(time, stid, tmpf, dwpf)) %>%
-  reshape(direction = 'wide', idvar = 'time', timevar = 'stid')
-
-station_obs = merge(nysm_obs, asos_obs, all = T)
-
-
-selected_sites = readRDS('results/select_stations/selected_sites.rds')
-# system_tv_sites = readRDS('results/select_stations/system_results.rds')$stids
-# system_tv_sites = c("BKNYRD", "BKMAPL", "QNDKIL", "JFK", "SIFKIL", "LGA",
-#                     "QNSOZO", "MHMHIL")
-# system_tv_sites = c('NYC', 'LGA')
-# system_tv = get_combined_tv(system_tv_sites)
-# only 400 of these, clearly I should collect more weather data for this step.
-# Note that this data is only May-September (technically April 29th)
-
-# gefs = read_ncdf('data/gefs_nick.nc')
+# get values from stars object at the centroid of a network
+wgs84 = 4326
+networks = readRDS('results/maps/coned_networks_cleaned.rds')
 
 
 # # get baseline accuracies-- must make sure to use exact same testing data!!
