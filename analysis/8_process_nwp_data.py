@@ -96,6 +96,17 @@ def get_daily_avg(ds):
     ds = ds.assign_coords({'edt9pm_day': edt9pm_day})
     return ds.groupby('edt9pm_day').mean().sel(edt9pm_day=slice(None, 7))
 
+def add_system_average(ds, weights):
+    '''Create a system average as a weighted mean of the individual network
+    values, and add it along the network axis.
+    '''
+    # sys_ave = ds.weighted(weights['network']).mean(dim='network')
+    # return sys_ave
+    sys_ave = ds.weighted(weights).mean(dim='network').\
+        expand_dims({'network': ['system']})
+    return xr.concat([ds.drop(['latitude', 'longitude']), sys_ave],
+                     dim='network')
+
 
 # get network centroids for interpolation
 # Would it be better to interpolate in the original NWP map projection? Since I
@@ -108,6 +119,12 @@ network_coords = {
     'latitude': ('network', centroids['lat'])
 }
 centroids_ds = xr.Dataset(coords=network_coords)
+
+# get network peaks for weighting
+# Would it be better to interpolate in the original NWP map projection? Since I
+# don't have those coordinates in the netcdf files, guess I won't for now
+network_peaks = pd.read_csv('results/energy_loads/network_peaks_2021.csv').\
+    set_index('network').to_xarray()
 
 
 # Let's start with the non-TV forecast data
@@ -131,6 +148,7 @@ gefs_0p5 = gefs_0p5.interp(latitude=centroids_ds['latitude'],
                            longitude=centroids_ds['longitude'],
                            # extrapolate if needed
                            kwargs={'fill_value': None})
+gefs_0p5 = add_system_average(gefs_0p5, network_peaks['reading'])
 
 def nan_prop(arr):
     '''Check to make sure we didn't get all NaN results in an array.
@@ -155,9 +173,9 @@ def get_3day_wmean(ds):
     return ds * .7 + ds_m1 * .2 + ds_m2 * .1
 
 gefs_0p5_daily = get_daily_avg(gefs_0p5)
-gefs_0p5_daily.to_netcdf('results/process_nwp_data/gefs_0p5_daily.nc')
+# gefs_0p5_daily.to_netcdf('results/process_nwp_data/gefs_0p5_daily.nc')
 gefs_0p5_3day_wmean = get_3day_wmean(gefs_0p5_daily)
-gefs_0p5_3day_wmean.to_netcdf('results/process_nwp_data/gefs_0p5_3day_wmean.nc')
+# gefs_0p5_3day_wmean.to_netcdf('results/process_nwp_data/gefs_0p5_3day_wmean.nc')
 
 
 # now the same for 0p25
@@ -189,6 +207,7 @@ gefs_0p25 = backfill_fct(gefs_0p25_fct, gefs_0p25_anl)
 gefs_0p25 = gefs_0p25.interp(latitude=centroids_ds['latitude'],
                              longitude=centroids_ds['longitude'],
                              kwargs={'fill_value': None})
+gefs_0p25 = add_system_average(gefs_0p25, network_peaks['reading'])
 # now that we have all the 0p25 data, get daily averages
 gefs_0p25_daily = get_daily_avg(gefs_0p25)
 # gefs_0p25_daily.to_netcdf('results/process_nwp_data/gefs_0p25_daily.nc')
@@ -230,6 +249,8 @@ gefs_atmos0p25_fct_members = gefs_atmos0p25_fct_members.\
     interp(latitude=centroids_ds['latitude'],
            longitude=centroids_ds['longitude'],
            kwargs={'fill_value': None})
+gefs_atmos0p25_fct_members = add_system_average(gefs_atmos0p25_fct_members,
+                                                network_peaks['reading'])
 
 gefs_fct_eff_temp = coned_eff_temp(gefs_atmos0p25_fct_members['t2m'],
                                    gefs_atmos0p25_fct_members['d2m']).\
@@ -239,9 +260,9 @@ gefs_fct_eff_temp = coned_eff_temp(gefs_atmos0p25_fct_members['t2m'],
 
 gefs_0p25_daily['eff_temp'] = gefs_fct_eff_temp.mean('number').\
     transpose('edt9pm_day', 'time', 'network')
-gefs_0p25_daily.to_netcdf('results/process_nwp_data/gefs_0p25_daily.nc')
+# gefs_0p25_daily.to_netcdf('results/process_nwp_data/gefs_0p25_daily.nc')
 gefs_0p25_3day_wmean = get_3day_wmean(gefs_0p25_daily)
-gefs_0p25_3day_wmean.to_netcdf('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
+# gefs_0p25_3day_wmean.to_netcdf('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
 
 
 # Also need to do 3-day summaries here, to get the correct standard deviations
@@ -263,7 +284,7 @@ gefs_tv_members.to_netcdf('results/process_nwp_data/gefs_tv_members.nc')
 gefs_tv = xr.merge([gefs_tv_members.mean('number'),
                     gefs_tv_members.std('number').rename('TV_sd')]).\
     transpose('edt9pm_day', 'time', 'network')
-gefs_tv.to_netcdf('results/process_nwp_data/gefs_tv.nc')
+# gefs_tv.to_netcdf('results/process_nwp_data/gefs_tv.nc')
 
 # # let's see how much forecast variation there is, split by forecast day
 # gefs_tv_members.std('number').mean(['time', 'latitude', 'longitude']).to_dataframe()
@@ -283,8 +304,8 @@ gefs_tv.to_netcdf('results/process_nwp_data/gefs_tv.nc')
 
 
 # combine the predictors
-gefs_daily = xr.merge([gefs_0p5_daily, gefs_0p25_daily])
-gefs_daily.to_netcdf('results/process_nwp_data/gefs_daily.nc')
+# gefs_daily = xr.merge([gefs_0p5_daily, gefs_0p25_daily])
+# gefs_daily.to_netcdf('results/process_nwp_data/gefs_daily.nc')
 
 gefs_3day_wmean = xr.merge([gefs_0p5_3day_wmean, gefs_0p25_3day_wmean, gefs_tv])
 gefs_3day_wmean.to_netcdf('results/process_nwp_data/gefs_3day_wmean.nc')

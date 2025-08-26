@@ -73,6 +73,13 @@ network_peaks = loads %>%
 networks$peak = network_peaks$reading[match(networks$id, network_peaks$network)]
 # plot(networks[, 'peak'])
 
+# save 2021 peak values, to use for weighting later
+loads %>%
+  subset(!bad & dt < '2022-01-01') %>%
+  aggregate(reading ~ network, ., max) %>%
+  write.csv(file = 'results/energy_loads/network_peaks_2021.csv',
+            row.names = FALSE)
+
 # plot_station_data(networks, aes(fill = peak), nyc_base, alpha = .9) +
 #   scale_fill_viridis_c(option = 'magma')
 

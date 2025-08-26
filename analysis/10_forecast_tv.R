@@ -26,7 +26,7 @@ library(mlr3)
 library(mlr3learners)
 library(mlr3tuning)
 library(mlr3tuningspaces)
-library(mlr3temporal)
+# library(mlr3temporal)
 source('R/mlr3_distr.R')
 source('R/mlr3_additions.R') # block CV, mean pinball loss, etc.
 
@@ -45,8 +45,10 @@ gefs_tv_members = read_ncdf('results/process_nwp_data/gefs_tv_members.nc')
 gefs_3day = read_ncdf('results/process_nwp_data/gefs_3day_wmean.nc')
 
 # get values from stars object at the centroid of a network
-wgs84 = 4326
 networks = readRDS('results/maps/coned_networks_cleaned.rds')
+stations = readRDS('results/station_data/stations.rds')
+
+system_results = readRDS('results/select_stations/system_results.rds')
 
 
 get_valid_day = function(nc, days_ahead) {
@@ -68,6 +70,42 @@ extract_values = function(network, days_ahead) {
     subset(select = -c(time, network))
 }
 
+# # This is kind of silly, but to get the system (all NYC) predictors, I'm going
+# # to find the ConEd networks that contain the weather stations, and just average
+# # the networks. Even though it's not the best representation of all NYC, we
+# # really are trying to predict the station values.
+# extract_system_values = function(version = c('orig', 'new'), days_ahead) {
+#   if (version == 'new') {
+#     sys_stations = system_results$stids
+#   } else {
+#     sys_stations = c('NYC', 'LGA')
+#   }
+#   # which networks are the stations in?
+#   network_ids = stations %>%
+#     subset(stid %in% sys_stations) %>%
+#     st_join(networks) %>%
+#     with(setNames(id, stid))
+#   # Central Park is not in a ConEd network! Nor is Teterboro
+#   missing_dict = c(NYC = '23M', TEB = '1X')
+#   missing_idx = which(names(network_ids) %in% names(missing_dict))
+#   network_ids[missing_idx] = missing_dict[names(network_ids)[missing_idx]]
+#   # get the values at each station, and average them
+#   network_predictors =
+#     lapply(network_ids, extract_values, days_ahead = days_ahead)
+#   parameters = head(names(network_predictors[[1]]), -1)
+#   sys_predictors = network_predictors %>%
+#     # put into long format
+#     lapply(reshape, direction = 'long', varying = parameters, v.names = 'value',
+#            idvar = 'day', timevar = 'parameter', times = parameters) %>%
+#     do.call(rbind, .) %>%
+#     # get averages
+#     aggregate(value ~ parameter + day, FUN = mean, na.rm = TRUE) %>%
+#     # widen again
+#     reshape(direction = 'wide', timevar = 'parameter', idvar = 'day')
+#   names(sys_predictors) = sub('value.', '', names(sys_predictors), fixed = TRUE)
+#   sys_predictors
+# }
+
 # add observed effective temps to short-term TV forecasts
 fill_incomplete_tv = function(tv, day, network, days_ahead) {
   return(tv)
@@ -84,11 +122,13 @@ fill_incomplete_tv = function(tv, day, network, days_ahead) {
 prepare_tv_task = function(network, days_ahead, predict_error = TRUE) {
   # Note: netcdf files use forecast day, while `system_tv` uses valid day. Must
   # be consistent!
-  out = extract_values(network, days_ahead) %>%
+  is_system = startsWith(network, 'system')
+  extract_name = if (is_system) 'system' else network
+  out = extract_values(extract_name, days_ahead) %>%
     subset(select = -eff_temp) # 3-day eff_temp is same as TV
   # sometimes soilw is all NA? for now just skip it if so
   if (all(is.na(out$soilw))) {
-    warning('All soilw values are missing')
+    # warning('All soilw values are missing')
     out$soilw = NULL
   }
   # For days_ahead < 2, need to add observed (past) portion of TV to the
@@ -98,7 +138,8 @@ prepare_tv_task = function(network, days_ahead, predict_error = TRUE) {
   }
   out$doy = as.POSIXlt(out$day)$yday
   id = paste('TV', network, days_ahead, sep = '_')
-  system_tv = all_tvs[, c('day', network)]
+  tv_name = if (is_system) network else paste0('network.', network)
+  system_tv = all_tvs[, c('day', tv_name)]
   names(system_tv)[2] = 'tv'
   if (predict_error) {
     # Predict the GEFS forecast error instead of directly predicting TV
@@ -201,7 +242,7 @@ ngr = LearnerRegrNGR$new()
 
 # ngr_at = auto_tuner(
 #     tuner = tnr("random_search"),
-#     learner = ngr, 
+#     learner = ngr,
 #     resampling = rsmp('block_cv'),
 #     measure = msr('regr.crps'),
 #     term_evals = 10
@@ -297,65 +338,6 @@ if (on_slurm) {
   plan(list(batchtools_local, multicore), workers = 4)
 }
 
-# # does it work?
-# plan(future.batchtools::batchtools_slurm, resources = list(
-#                                               walltime = 60, memory = 400, ncpus = 1
-#                                           ))
-
-# f <- future({
-#   data.frame(
-#     hostname = Sys.info()[["nodename"]],
-#           os = Sys.info()[["sysname"]],
-#        cores = unname(parallelly::availableCores()),
-#      modules = Sys.getenv("LOADEDMODULES")
-#   )
-# })
-# info <- value(f)
-# print(info)
-# # working!
-
-if (on_slurm) {
-  # find the nodes I can use
-  all_nodes = system('sinfo -p batch -o "%n" | sort', intern = TRUE)[-1]
-  node_vals = list()
-  node_res = list()
-  for (node in all_nodes) {
-    print(node)
-    plan(future.batchtools::batchtools_slurm,
-         resources = list(nodes = node, walltime = 60, memory = 400, ncpus = 1))
-    f <- future({
-      data.frame(
-          hostname = Sys.info()[["nodename"]],
-          os = Sys.info()[["sysname"]],
-          cores = unname(parallelly::availableCores()),
-          modules = Sys.getenv("LOADEDMODULES")
-      )
-    })
-    R.utils::withTimeout(node_vals[[node]] <- try(value(f)), timeout = 15)
-    if (!node %in% names(node_vals)) node_vals[[node]] = 'unknown'
-  }
-  node_status = sapply(node_vals, function(x) {
-    if (inherits(x, 'try-error')) {
-      if (grepl('Rscript: command not found', x)) {
-        'bad'
-      } else if (grepl('reached elapsed time limit', x)) {
-        'slow'
-      }
-    } else if (inherits(x, 'data.frame')) {
-      'good'
-    } else {
-      x
-    }
-  })
-  node_status[node_status == 'slow']
-  exclude_list = node_status[node_status != 'good'] %>%
-    names %>%
-    paste0(collapse = ',')
-}
-#SBATCH --nodelist=<%= resources$nodes %>
-#uagc20-08,uagc21-06,uagc23-01,uagc23-02,uagc23-03,uagc23-04,uagc24-01,uagc24-02,uagc24-03,uagc24-04,uagc24-05,uagc24-06
-#uagc20-08,uagc21-06,uagc23-01,uagc23-02,uagc23-03,uagc23-04,uagc24-01,uagc24-02,uagc24-03,uagc24-04,uagc24-05,uagc24-06
-
 # benchmark_tasks = rand_networks %>%
 #   lapply(function(net) {
 #     lapply(0:7, function(i) {
@@ -424,8 +406,8 @@ bgrid = benchmark_grid(
 system.time(bres3 <- benchmark(bgrid, store_models = TRUE))
 # system.time(bres3 <- progressr::with_progress(benchmark(bgrid, store_models = TRUE)))
 saveRDS(bres3, 'results/forecast_tv/benchmarks.rds')
-bres3 = readRDS('results/forecast_tv/benchmarks.rds')
-# absurdly huge file
+# bres3 = readRDS('results/forecast_tv/benchmarks.rds')
+# this is an outrageously large file-- at least 25GB in RAM
 
 bres3$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 
@@ -470,7 +452,7 @@ drf_params = readRDS('results/forecast_tv/tv_hyperparameters.rds')
 # networks + 2 system TVs
 drf_params = c(drf_params, list(ci.group.size = 1, num.threads = 4))
 make_drf = function(network) {
-  message('starting ', network)
+  # message('starting ', network)
   drf = LearnerRegrDrf$new()
   do.call(drf$param_set$set_values, drf_params)
   task = prepare_tv_task_combined(network, predict_error = TRUE)
@@ -478,11 +460,13 @@ make_drf = function(network) {
   drf
 }
 
+library(pbapply)
 tv_models = names(all_tvs)[-1] %>%
-  lapply(make_drf)
-
-
-
+  sub('network.', '', ., fixed = TRUE) %>%
+  pblapply(make_drf)
+names(tv_models) = names(all_tvs)[-1] %>%
+  sub('network.', '', ., fixed = TRUE)
+saveRDS(tv_models, 'results/forecast_tv/tv_models.rds')
 
 
 # slightly different for GEFS benchmarking
