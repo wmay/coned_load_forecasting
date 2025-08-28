@@ -9,14 +9,14 @@ from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import xarray as xr
-from herbie import Herbie
+from herbie import Herbie, HerbieLatest, HerbieWait
 from nwpdownload import NwpCollection
 from dask.distributed import Client
 
 # last 4 days
 start_date = datetime.today() - timedelta(days=4)
 all_runs = pd.date_range(start=start_date.strftime('%Y-%m-%d 00:00'),
-                         periods=4 * 4, freq='6h').to_series().index
+                         periods=5 * 4, freq='6h').to_series().index
 
 # In general, the approach here is to get the forecast variables going out to 8
 # days ahead.
@@ -148,34 +148,40 @@ gefs_searches = gefs_params['search'].unique()
 runs_06utc = all_runs[np.arange(len(all_runs)) % 4 == 1]
 runs_not_06utc = all_runs[np.arange(len(all_runs)) % 4 != 1]
 runs_fct = runs_06utc[-1:] # only need the most recent forecasts
+# runs_fct = all_runs[-1:] # for testing
 gefs_fxx_fct = range(3, 24 * 8, 3) # out to 8 days ahead
 
-# f03+
-gefs_fct_args_list = make_collection_args(runs_fct, gefs_fxx_fct,
-                                          'gefs',
-                                          ['atmos.25', 'atmos.5', 'atmos.5b'],
-                                          search=gefs_searches)
-# also want individual ensembles to calculate TV statistics
-gefs_tv_fct = {
-    'model': 'gefs',
-    'product': 'atmos.25',
-    'DATES': runs_fct,
-    'fxx': gefs_fxx_fct,
-    'members': range(0, 31),
-    'extent': nyc_extent,
-    'search': '|'.join([
-        ':TMP:2 m above ground:',
-        ':DPT:2 m above ground:'
-    ])
-}
+# we need to time this carefully, downloading the forecast data incrementally so
+# we can quickly get the tail end of the lead times after they're posted
+def get_fct_collection(fxx):
+    '''Get collections for forecasts at the given fxx range.
+    '''
+    # f03+
+    gefs_fct_args_list = make_collection_args(runs_fct, fxx,
+                                              'gefs',
+                                              ['atmos.25', 'atmos.5', 'atmos.5b'],
+                                              search=gefs_searches)
+    # also want individual ensembles to calculate TV statistics
+    gefs_tv_fct = {
+        'model': 'gefs',
+        'product': 'atmos.25',
+        'DATES': runs_fct,
+        'fxx': fxx,
+        'members': range(0, 31),
+        'extent': nyc_extent,
+        'search': '|'.join([
+            ':TMP:2 m above ground:',
+            ':DPT:2 m above ground:'
+        ])
+    }
+    return gefs_fct_args_list + [gefs_tv_fct]
 
 # now f00
 gefs_f00_args_list = make_collection_args(all_runs, [0],
                                           'gefs',
                                           ['atmos.25', 'atmos.5', 'atmos.5b'],
                                           search=gefs_searches)
-gefs_tv_f00 = gefs_tv_fct.copy()
-gefs_tv_f00['fxx'] = [0]
+gefs_tv_f00 = get_fct_collection([0])[-1].copy() # copy the TV settings
 gefs_tv_f00['DATES'] = all_runs
 
 # now f03
@@ -199,30 +205,66 @@ gefs_f06_args_list = make_collection_args(runs_not_06utc, [6],
                                           search=f00_missing)
 
 gefs_all_collections_args = gefs_f00_args_list + [gefs_tv_f00] + \
-    gefs_f03_args_list + [gefs_tv_f03] + gefs_f06_args_list + \
-    gefs_fct_args_list + [gefs_tv_fct]
+    gefs_f03_args_list + [gefs_tv_f03] + gefs_f06_args_list
 
-gefs_collections = []
-for collection_args in gefs_all_collections_args:
-    collection = NwpCollection(**collection_args, save_dir='scripts/data/nwpdownload')
-    gefs_collections.append(collection)
+def download_collections(all_collections_args):
+    '''Download a list of NwpCollections.
+    '''
+    collections = []
+    for collection_args in all_collections_args:
+        collection = NwpCollection(**collection_args, save_dir='scripts/data/nwpdownload')
+        collections.append(collection)
+    # how much data is all of this?
+    collection_sizes = []
+    for collection in collections:
+        collection_sizes.append(collection.collection_size(humanize=False))
+        print(collection.collection_size())
+    # how big is the whole thing?
+    from humanize import naturalsize
+    naturalsize(sum(collection_sizes))
+    for i, collection in enumerate(collections):
+        print(f'Starting collection {i+1} of {len(collections)}')
+        collection.download()
 
-# how much data is all of this?
-collection_sizes = []
-for collection in gefs_collections:
-    collection_sizes.append(collection.collection_size(humanize=False))
-    print(collection.collection_size())
+print(f'Starting analysis/backfill collections ...')
+download_collections(gefs_all_collections_args)
 
-# how big is the whole thing?
-from humanize import naturalsize
-naturalsize(sum(collection_sizes))
+# now we incrementally download the fxx of the most recent forecast
+print(f'Starting forecast collections ...')
 
-for i, collection in enumerate(gefs_collections):
-    print(f'Starting collection {i+1} of {len(gefs_collections)}')
-    collection.download()
+# latest_fxx = gefs_fxx_fct[0]
+latest_fxx = 0
+while latest_fxx < gefs_fxx_fct[-1]:
+    next_fxx = latest_fxx + 3
+    H = HerbieLatest(model="gefs", fxx=next_fxx, member=30)
+    if H.date >= runs_fct[0]:
+        latest_fxx = next_fxx
+    else:
+        break
+
+cur_fxx = gefs_fxx_fct[0]
+all_downloaded = False
+while not all_downloaded:
+    new_fxx = [ fxx for fxx in gefs_fxx_fct
+                if fxx > cur_fxx and fxx <= min(latest_fxx, gefs_fxx_fct[-1]) ]
+    fct_collections = get_fct_collection(new_fxx)
+    download_collections(fct_collections)
+    cur_fxx = new_fxx[-1]
+    if cur_fxx == gefs_fxx_fct[-1]:
+        all_downloaded = True
+    else:
+        # wait for the next fxx
+        next_fxx = latest_fxx + 3
+        HerbieWait(run=runs_fct[0], model='gefs', product='atmos.25',
+                   fxx=next_fxx, wait_for='1h', check_interval='60s')
+        latest_fxx = next_fxx
 
 
 # second step: combine each collection into a single data file
+
+# make sure we have the full collections
+gefs_all_collections_args = gefs_all_collections_args + \
+    get_fct_collection(gefs_fxx_fct)
 
 def get_file_name(c):
     '''Generate a filename based on the collection attributes.
