@@ -11,12 +11,13 @@ import pandas as pd
 import xarray as xr
 from herbie import Herbie, HerbieLatest, HerbieWait
 from nwpdownload import NwpCollection
+from nwpdownload.xarray import merge_nwp_variables
 from dask.distributed import Client
 
 # last 4 days
 start_date = datetime.today() - timedelta(days=4)
 all_runs = pd.date_range(start=start_date.strftime('%Y-%m-%d 00:00'),
-                         periods=5 * 4, freq='6h').to_series().index
+                         periods=4 * 4 + 2, freq='6h').to_series().index
 
 # In general, the approach here is to get the forecast variables going out to 8
 # days ahead.
@@ -242,7 +243,7 @@ while latest_fxx < gefs_fxx_fct[-1]:
     else:
         break
 
-cur_fxx = gefs_fxx_fct[0]
+cur_fxx = -1
 all_downloaded = False
 while not all_downloaded:
     new_fxx = [ fxx for fxx in gefs_fxx_fct
@@ -292,7 +293,10 @@ def get_file_name(c):
 comp = { 'zlib': True, 'complevel': 4 }
 # encoding = { var: comp for var in ds1.data_vars }
 
-from nwpdownload.xarray import merge_nwp_variables
+gefs_collections = []
+for collection_args in gefs_all_collections_args:
+    collection = NwpCollection(**collection_args, save_dir='scripts/data/nwpdownload')
+    gefs_collections.append(collection)
 
 # write each collection to a netcdf file
 for c in gefs_collections:

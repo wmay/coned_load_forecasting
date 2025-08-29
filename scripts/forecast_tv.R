@@ -17,12 +17,12 @@ source('R/mlr3_distr.R')
 lgr::get_logger("mlr3")$set_threshold("warn")
 lgr::get_logger("bbotk")$set_threshold("warn")
 
-all_eff_tmps = read.csv('results/process_station_data/eff_tmp.csv')
-all_tvs = read.csv('results/process_station_data/tv.csv')
+all_eff_tmps = read.csv('scripts/data/eff_tmp.csv')
+all_tvs = read.csv('scripts/data/tv.csv')
 
 # if coordinates are not in the same order for every variable, `read_mdim` works
 # fine while `read_ncdf` messes up the coordinates
-gefs_3day = read_ncdf('results/process_nwp_data/gefs_3day_wmean.nc')
+gefs_3day = read_ncdf('scripts/data/gefs_3day_wmean.nc')
 
 
 get_valid_day = function(nc, days_ahead) {
@@ -38,16 +38,15 @@ extract_values = function(network, days_ahead) {
     dplyr::slice('edt9pm_day', day_idx) %>%
     dplyr::slice('network', network_idx) %>%
     as.data.frame %>%
-    # getElement('time') %>%
-    # class
     transform(day = as.Date(time) + days_ahead) %>%
     subset(select = -c(time, network))
 }
 
 # add observed effective temps to short-term TV forecasts
 fill_incomplete_tv = function(tv, day, network, days_ahead) {
-  return(tv)
-  system_eff_tmp = all_eff_tmps[, c('day', paste0('network.', network))]
+  is_system = startsWith(network, 'system')
+  eff_tmps_name = if (is_system) network else paste0('network.', network)
+  system_eff_tmp = all_eff_tmps[, c('day', eff_tmps_name)]
   names(system_eff_tmp)[2] = 'eff_temp'
   if (days_ahead == 1) {
     tv + .1 * system_eff_tmp$eff_temp[match(day - 2, system_eff_tmp$day)]
@@ -88,7 +87,7 @@ prepare_newdata = function(network, days_ahead = 0) {
   # Predict the GEFS forecast error instead of directly predicting TV
   out %>%
     subset(select = -day) %>%
-    na.omit %>%
+    # na.omit %>%
     transform(fct_err = as.numeric(NA)) %>%
     as_task_regr('fct_err', id = id)
 }
