@@ -16,7 +16,7 @@
 # distr6_repos =  c(CRAN = 'https://cloud.r-project.org',
 #                   raphaels1 = 'https://raphaels1.r-universe.dev')
 # install.packages('distr6', repos = distr6_repos)
-setwd('..')
+# setwd('..')
 library(magrittr)
 library(stars) # also requires ncmeta
 # library(beepr)
@@ -47,8 +47,7 @@ gefs_3day = read_ncdf('results/process_nwp_data/gefs_3day_wmean.nc')
 # get values from stars object at the centroid of a network
 networks = readRDS('results/maps/coned_networks_cleaned.rds')
 stations = readRDS('results/station_data/stations.rds')
-
-system_results = readRDS('results/select_stations/system_results.rds')
+# system_results = readRDS('results/select_stations/system_results.rds')
 
 
 get_valid_day = function(nc, days_ahead) {
@@ -108,8 +107,9 @@ extract_values = function(network, days_ahead) {
 
 # add observed effective temps to short-term TV forecasts
 fill_incomplete_tv = function(tv, day, network, days_ahead) {
-  return(tv)
-  system_eff_tmp = all_eff_tmps[, c('day', paste0('network.', network))]
+  is_system = startsWith(network, 'system')
+  eff_tmps_name = if (is_system) network else paste0('network.', network)
+  system_eff_tmp = all_eff_tmps[, c('day', eff_tmps_name)]
   names(system_eff_tmp)[2] = 'eff_temp'
   if (days_ahead == 1) {
     tv + .1 * system_eff_tmp$eff_temp[match(day - 2, system_eff_tmp$day)]
@@ -174,68 +174,11 @@ prepare_tv_task_combined = function(network, predict_error = TRUE) {
 }
 
 
-# # get baseline accuracies-- must make sure to use exact same testing data!!
-# nwp_acc = sapply(2:7, function(i) {
-#   tv_fc_err = prepare_multiday_dataset(i)$y$tv_fc_err
-#   n_train = ceiling(length(tv_fc_err) * 4 / 5)
-#   test_data = tail(tv_fc_err, -n_train)
-#   c(day = i, MAE = mean(abs(test_data)), RMSE = sqrt(mean(test_data^2)))
-# }) %>%
-#   t %>%
-#   as.data.frame
-
-# old (calculated from mean TMP and DWP)
-#   day      MAE     RMSE
-# 1   2 1.536112 2.102919
-# 2   3 1.851774 2.469837
-# 3   4 2.270325 2.830988
-# 4   5 2.624355 3.262561
-# 5   6 3.079295 3.875903
-# 6   7 3.533117 4.485339
-
-# new (mean TV from ens. members) -- it's better!
-#   day      MAE     RMSE
-# 1   2 1.374344 1.857518
-# 2   3 1.635118 2.104380
-# 3   4 2.032850 2.503328
-# 4   5 2.392062 2.923228
-# 5   6 2.829654 3.531663
-# 6   7 3.236689 4.133973
-
-
 # Models
 
 # ngr = LearnerRegrNGR$new()
 # rangerdist = LearnerRegrRangerDist$new()
 # drf = LearnerRegrDrf$new()
-
-# # How long does it take to run these?
-# task0 = prepare_tv_task_combined('3B', predict_error = TRUE)
-
-# system.time(res <- ngr$train(task0))
-#   #  user  system elapsed 
-#   # 8.383   0.013   8.453 
-# system.time(res <- rangerdist$train(task0))
-#  #   user  system elapsed 
-#  # 11.199   0.112  10.878 
-# system.time(res <- drf$train(task0)) # using 4 cores
-#  #   user  system elapsed 
-#  # 48.991   0.228  14.624 
-# drf$param_set$set_values(num.threads = 1)
-# system.time(res <- drf$train(task0)) # using 1 core
-#  #   user  system elapsed 
-#  # 45.852   0.234  46.063
-
-# rfgls = LearnerRegrRfgls$new()
-# rfgls$param_set$set_values(param_estimate = TRUE, ntree = 314,
-#                            mtry.ratio = 0.3185942, nthsize = 8, h = 1, lags = 1)
-# system.time(rfgls$train(forecast_tv_tasks[[6]]))
-
-# blas library makes a huge difference here--
-# libblas: 2500 seconds
-# openblas: 840 seconds
-# mkl: 8500 seconds omfg
-
 
 # so now we want to autotune these
 ngr = LearnerRegrNGR$new()
@@ -299,18 +242,6 @@ drf_at = auto_tuner(
 # )
 
 
-# # did we split it correctly?
-# r1 = rsmp('block_cv')
-# r1$instantiate(task0)
-# r1$instance %>%
-#   subset(task0$data(cols='days_ahead')$days_ahead == 6) %>%
-#   tail
-# r1$instance %>%
-#   subset(task0$data(cols='days_ahead')$days_ahead == 7) %>%
-#   head
-# # it works!
-
-
 # It'd take too long to run this on all networks and lead times. So I'm randomly
 # selecting a few, running the benchmarks, then choosing whichever model
 # performs best on average
@@ -320,77 +251,29 @@ rand_networks = sample(networks$id, 5, replace = TRUE)
 # [1] "4M"  "5Q"  "3X"  "39M" "12M"
 rand_days = sample(0:7, 10, replace = TRUE)
 
-# RFGLS specifically takes more time, so worth running in parallel
-
-# run the inner loop in parallel and the outer loop sequentially
-# future::plan(list('sequential', 'multicore'), workers = 4)
-# future::plan("sequential")
-
 # run outer loop via slurm, inner loop multicore on a slurm node
 on_slurm = system('whoami', intern = T) == 'wm177874'
 if (on_slurm) {
   # for running on slurm, requesting 10 CPUs per job
-  slurm_resources = list(walltime = 2400, memory = 10e3, ncpus = 10)
-  plan(list(tweak(batchtools_slurm, resources = slurm_resources, workers = 50),
-            multicore))
+  slurm_resources = list(walltime = 2400, memory = 10e3, ncpus = 17)
+  plan(list(
+      tweak(batchtools_slurm, resources = slurm_resources, workers = 50),
+      multicore
+  ))
+  # plan(list(
+  #     tweak(multicore, workers = availableCores() %/% 10),
+  #     tweak(multicore, workers = I(10))
+  # ))
 } else {
   # for testing locally
-  plan(list(batchtools_local, multicore), workers = 4)
+  # plan(list(batchtools_local, multicore), workers = 4)
+  plan(list('sequential', 'multicore'), workers = 4)
 }
-
-# benchmark_tasks = rand_networks %>%
-#   lapply(function(net) {
-#     lapply(0:7, function(i) {
-#       print(net)
-#       print(i)
-#       prepare_tv_task(net, i, predict_error = TRUE)
-#     })
-#   }) %>%
-#   do.call(c, .) # put them all in the same list
-
-# tl;dr predicting the forecast error works better than predicting TV directly
-
-# # benchmark methods, first predicting the result directly, then predicting the
-# # GEFS forecast error  
-# forecast_tv_tasks = lapply(0:7, prepare_tv_task, predict_error = FALSE)
-# bgrid = benchmark_grid(
-#     tasks = forecast_tv_tasks,
-#     learners = c(ngr, rangerdist_at, drf_at),
-#     resamplings = rsmp('forecast_holdout')
-# )
-# system.time(bres <- progressr::with_progress(benchmark(bgrid)))
-# bres$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
-# saveRDS(bres, 'benchmarks.rds')
-
-# benchmark_tasks = rand_networks %>%
-#   lapply(function(net) {
-#     lapply(0:7, function(i) {
-#       print(net)
-#       print(i)
-#       prepare_tv_task(net, i, predict_error = TRUE)
-#     })
-#   }) %>%
-#   do.call(c, .) # put them all in the same list
-# # forecast_tv_tasks2 = lapply(0:7, prepare_tv_task, predict_error = TRUE)
-# bgrid = benchmark_grid(
-#     tasks = benchmark_tasks,
-#     learners = c(ngr, rangerdist_at, drf_at, rfgls_at),
-#     resamplings = rsmp('forecast_holdout')
-# )
-# system.time(bres2 <- progressr::with_progress(benchmark(bgrid)))
-# bres2$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
-# # this one is consistently a bit better
-
-# bres$aggregate(c(msr('regr.crps'), msr('regr.mae')))
-# bres2$aggregate(c(msr('regr.crps'), msr('regr.mae')))
-
 
 # First step-- model selection
 
-# benchmark_tasks = mapply(prepare_tv_task, rand_networks, rand_days,
-#                          MoreArgs = list(predict_error = TRUE))
-benchmark_tasks = paste0('network.', rand_networks) %>%
-  lapply(prepare_tv_task_combined, predict_error = TRUE)
+benchmark_tasks = lapply(rand_networks, prepare_tv_task_combined,
+                         predict_error = TRUE)
 bgrid = benchmark_grid(
     tasks = benchmark_tasks,
     # learners = c(ngr, rangerdist_at, drf_at, rfgls_at),
@@ -435,16 +318,14 @@ drf_res_params = extract_inner_tuning_results(bres3) %>%
 # two logical values, honesty and honesty.prune.leaves
 table(drf_res_params$honesty)
 table(drf_res_params[, c('honesty', 'honesty.prune.leaves')])
-# alright, we're going with honesty and honesty.prune.leaves
+# alright, we're going with no honesty
 
 drf_params = drf_res_params %>%
-  subset(honesty & honesty.prune.leaves) %>%
-  subset(select = c('mtry.ratio', 'num.trees', 'sample.fraction',
-                    'honesty.fraction')) %>%
+  subset(select = c('mtry.ratio', 'num.trees', 'sample.fraction')) %>%
   colMeans %>%
   as.list
 drf_params$num.trees = round(drf_params$num.trees)
-drf_params[c('honesty', 'honesty.prune.leaves')] = TRUE
+drf_params$honesty = FALSE
 saveRDS(drf_params, 'results/forecast_tv/tv_hyperparameters.rds')
 drf_params = readRDS('results/forecast_tv/tv_hyperparameters.rds')
 

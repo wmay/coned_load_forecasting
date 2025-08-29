@@ -5,7 +5,7 @@ resolution.
 '''
 
 import os
-os.chdir('..')
+# os.chdir('..')
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -104,7 +104,7 @@ def add_system_average(ds, weights):
     # return sys_ave
     sys_ave = ds.weighted(weights).mean(dim='network').\
         expand_dims({'network': ['system']})
-    return xr.concat([ds.drop(['latitude', 'longitude']), sys_ave],
+    return xr.concat([ds.drop_vars(['latitude', 'longitude']), sys_ave],
                      dim='network')
 
 
