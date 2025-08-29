@@ -12,6 +12,7 @@ dependencies:
   - pip # this is redundant but conda complains if it isn't there
   - pip:
     - nwpdownload[k8s]@git+https://github.com/ASRCsoft/nwpdownload
+    - eccodes>=2.42
     - flox
     - ipython
     - netCDF4
