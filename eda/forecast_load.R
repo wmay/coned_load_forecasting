@@ -18,150 +18,111 @@
 # - get confidence intervals/p-values (randomize data etc.) May want to shuffle
 #   minibatches. See https://arxiv.org/pdf/1206.5533, p. 6
 
+# pkg_deps = c('ncmeta', 'crch', 'ranger', 'drf', 'RandomForestsGLS',
+#              'scoringRules')
+# install.packages(pkg_deps)
+# remotes::install_github("mlr-org/mlr3temporal")
+# distr6_repos =  c(CRAN = 'https://cloud.r-project.org',
+#                   raphaels1 = 'https://raphaels1.r-universe.dev')
+# install.packages('distr6', repos = distr6_repos)
 setwd('..')
-library(psychrolib)
 library(timeDate) # holidays
 library(magrittr)
 library(stars) # also requires ncmeta
-# install.packages('ncmeta')
-# library(quantregForest)
-# library(crch)
-library(scoringRules)
-library(beepr)
-source('R/load_data.R')
-source('R/coned_tv.R')
+library(future)
+# library(future.batchtools)
+library(mlr3)
+library(torch)
+library(mlr3torch)
+library(mlr3learners)
+library(mlr3tuning)
+library(mlr3tuningspaces)
+library(mlr3pipelines)
 source('R/mlr3_additions.R') # block CV, mean pinball loss, etc.
 source('R/mlr3_distr.R')
-source('R/forecast_dataset.R')
 
-get_combined_eff_tmp = function(stids) {
-  tmp_cols = paste0('tmpf.', stids)
-  dwp_cols = paste0('dwpf.', stids)
-  tmps = rowMeans(station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
-  dwps = rowMeans(station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
-  out = coned_effective_temp(station_obs$time, tmps, dwps)
-  row.names(out) = as.character(out$day)
-  out
+# see notes in `?benchmark` and `?mlr_tuners_random_search`
+lgr::get_logger("mlr3")$set_threshold("warn")
+lgr::get_logger("bbotk")$set_threshold("warn")
+
+all_eff_tmps = read.csv('results/process_station_data/eff_tmp.csv')
+all_tvs = read.csv('results/process_station_data/tv.csv')
+
+# if coordinates are not in the same order for every variable, `read_mdim` works
+# fine while `read_ncdf` messes up the coordinates
+gefs_tv_members = read_ncdf('results/process_nwp_data/gefs_tv_members.nc')
+# ^ this is only needed for evaluating the GEFS
+# gefs_daily = read_ncdf('results/process_nwp_data/gefs_daily.nc')
+gefs_3day = read_ncdf('results/process_nwp_data/gefs_3day_wmean.nc')
+
+# get values from stars object at the centroid of a network
+networks = readRDS('results/maps/coned_networks_cleaned.rds')
+stations = readRDS('results/station_data/stations.rds')
+system_results = readRDS('results/select_stations/system_results.rds')
+gam_fct = readRDS('results/load_curve_forecast/gam_forecasts.rds')
+
+get_valid_day = function(nc, days_ahead) {
+  # time is generally read by R as a date, due to the 1 day differences
+  attr(nc, 'dimensions')$time$values + days_ahead
 }
 
-# Get combined TV by averaging site dry+wet temperatures first and *then*
-# getting the daily maximum of the averaged values. This ensures that the values
-# are all taken from the same time of day
-# IMPORTANT: Can't remove holidays prior to this calculation bc they're needed for lagged values
-get_combined_tv = function(stids) {
-  tmp_cols = paste0('tmpf.', stids)
-  dwp_cols = paste0('dwpf.', stids)
-  tmps = rowMeans(station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
-  dwps = rowMeans(station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
-  out = coned_tv(station_obs$time, tmps, dwps)
-  row.names(out) = as.character(out$day)
-  out
+# note that the day returned here is the valid day
+extract_values = function(network, days_ahead) {
+  network_idx = which(attr(gefs_3day, 'dimensions')$network$values == network)
+  day_idx = days_ahead + 1
+  gefs_3day %>%
+    dplyr::slice('edt9pm_day', day_idx) %>%
+    dplyr::slice('network', network_idx) %>%
+    as.data.frame %>%
+    # getElement('time') %>%
+    # class
+    transform(valid_day = as.Date(time) + days_ahead) %>%
+    subset(select = -c(time, network))
 }
 
-# calculate effective temp from 3-hourly forecast data (requires fahrenheit)
-coned_effective_temp_3hr = function(t, temp, dwp) {
-  data.frame(time = t, temp = temp, dwp = dwp) %>%
-    subset(!is.na(temp) & !is.na(dwp)) %>%
-    transform(wetbulb = coned_wet_bulb(temp, dwp)) %>%
-    transform(eff_temp = (temp + wetbulb) / 2) %>%
-    # remove night/morning
-    transform(hour_of_day = as.integer(format(time, '%H'))) %>%
-    subset(hour_of_day >= 9 & hour_of_day <= 21) %>%
-    # get max by day
-    transform(day = as.Date(time, tz = 'EST5EDT')) %>%
-    aggregate(eff_temp ~ day, ., max, na.rm = T)
-}
-
-# ConEd's "temperature variable". `temp` and `dwp` must be in Fahrenheit
-coned_tv_nwp = function(t, temp, dwp) {
-  coned_effective_temp(t, temp, dwp) %>%
-    transform(tv = rolling_mean3(day, eff_temp, 'days', c(.7, .2, .1))) %>%
-    transform(tv = coned_round(tv, 1)) %>%
-    subset(select = c(day, tv))
-}
-
-make_predictor_dataset = function(nc, lon, lat, ltime) {
-  if (!is.null(attr(nc, 'dimensions')$refDate$values)) {
-    refDates = attr(nc, 'dimensions')$refDate$values
-  } else {
-    refDates = with(attr(nc, 'dimensions')$refDate, {
-      offset + (seq(from, to) - 1) * delta
-    })
+# add observed effective temps to short-term TV forecasts
+fill_incomplete_tv = function(tv, day, network, days_ahead) {
+  # return(tv)
+  system_eff_tmp = all_eff_tmps[, c('day', paste0('network.', network))]
+  names(system_eff_tmp)[2] = 'eff_temp'
+  if (days_ahead == 1) {
+    tv + .1 * system_eff_tmp$eff_temp[match(day - 2, system_eff_tmp$day)]
+  } else if (days_ahead == 0) {
+    tv + .2 * system_eff_tmp$eff_temp[match(day - 1, system_eff_tmp$day)] +
+      .1 * system_eff_tmp$eff_temp[match(day - 2, system_eff_tmp$day)]
   }
-  times = refDates + as.difftime(3 * ltime, units = 'hours')
-  attr(times, 'tzone') = 'America/New_York'
-  out = lapply(nc, function(x) x[lon, lat, ltime, ]) %>%
-    as.data.frame
-  cbind(time = times, out)
 }
 
-make_predictor_dataset2 = function(nc, init, lon, lat, days_ahead = 1) {
-  # want 9am-9pm. 9 (3) is 4pm. 2-14, 3-12, 1-4
-  # This should really be a function of the forecast init hour
-  ltime = days_ahead * 8 + 1:4
-  if (!is.null(attr(nc, 'dimensions')$refDate$values)) {
-    refDates = attr(nc, 'dimensions')$refDate$values
-  } else {
-    refDates = with(attr(nc, 'dimensions')$refDate, {
-      offset + (seq(from, to) - 1) * delta
-    })
-  }
-  dates = as.Date(refDates + as.difftime(3 * ltime[1], units = 'hours'),
-                  tz = 'America/New_York')
-  # times = refDates + as.difftime(3 * ltime, units = 'hours')
-  # attr(times, 'tzone') = 'America/New_York'
-  init_ind = as.POSIXlt(refDates)$hour == init
-  out = lapply(nc, function(x) colMeans(x[lon, lat, ltime, init_ind])) %>%
-    as.data.frame
-  # let's remove the sd columns, as they aren't very meaningful or useful
-  sd_col = endsWith(names(out), '_sd')
-  out = out[, !sd_col]
-  # I also want max temperature
-  tmp_max = apply(nc[['TMP']][lon, lat, ltime, init_ind], 2, max)
-  # I also want "effective" temperature
-  eff_tmp = with(nc, {
-    tmp = TMP[lon, lat, ltime, init_ind]
-    dpt = DPT[lon, lat, ltime, init_ind]
-    time = refDates[init_ind] %>%
-      sapply(function(x) x + as.difftime(3 * ltime, units = 'hours')) %>%
-      as.POSIXct(tz = 'America/New_York')
-    coned_effective_temp_3hr(c(time), as_fahrenheit(c(tmp) - 273.15),
-                             as_fahrenheit(c(dpt) - 273.15))
-  })
-  cbind(day = dates[init_ind], out, TMP_max = tmp_max) %>%
-    merge(eff_tmp, all.x = TRUE)
-}
+# prepare_dataset = function(days_ahead = 1) {
+#   x = make_predictor_dataset2(gefs, 12, 3, 4, days_ahead = days_ahead)
+#   # add doy to account for seasonality
+#   x$doy = as.POSIXlt(x$day)$yday
+#   # y is the forecast error
+#   y = x %>%
+#     transform(obs_eff_temp = system_eff_tmp$eff_temp[match(day, system_eff_tmp$day)]) %>%
+#     transform(eff_tmp_fc_err = eff_temp - obs_eff_temp) %>%
+#     subset(select = eff_tmp_fc_err)
+#   ds = na.omit(cbind(x, y))
+#   x = subset(ds, select = -c(day, eff_tmp_fc_err))
+#   y = subset(ds, select = eff_tmp_fc_err)
+#   list(x = x, y = y, day = ds$day)
+# }
 
-prepare_dataset = function(days_ahead = 1) {
-  x = make_predictor_dataset2(gefs, 12, 3, 4, days_ahead = days_ahead)
-  # add doy to account for seasonality
-  x$doy = as.POSIXlt(x$day)$yday
-  # y is the forecast error
-  y = x %>%
-    transform(obs_eff_temp = system_eff_tmp$eff_temp[match(day, system_eff_tmp$day)]) %>%
-    transform(eff_tmp_fc_err = eff_temp - obs_eff_temp) %>%
-    subset(select = eff_tmp_fc_err)
-  ds = na.omit(cbind(x, y))
-  x = subset(ds, select = -c(day, eff_tmp_fc_err))
-  y = subset(ds, select = eff_tmp_fc_err)
-  list(x = x, y = y, day = ds$day)
-}
+# average_columns = function(dat, x) {
+#   .1 * dat[, paste0(x, '.1')] + .2 * dat[, paste0(x, '.2')] +
+#     .7 * dat[, paste0(x, '.3')]
+# }
 
-average_columns = function(dat, x) {
-  .1 * dat[, paste0(x, '.1')] + .2 * dat[, paste0(x, '.2')] +
-    .7 * dat[, paste0(x, '.3')]
-}
-
-average_3days = function(dat) {
-  columns = names(dat)[endsWith(names(dat), '.1')]
-  for (n in columns) {
-    new_name = substr(n, 1, nchar(n) - 2)
-    old_names = paste(new_name, 1:3, sep = '.')
-    dat[, new_name] = average_columns(dat, new_name)
-    dat[, old_names] = NULL
-  }
-  dat
-}
+# average_3days = function(dat) {
+#   columns = names(dat)[endsWith(names(dat), '.1')]
+#   for (n in columns) {
+#     new_name = substr(n, 1, nchar(n) - 2)
+#     old_names = paste(new_name, 1:3, sep = '.')
+#     dat[, new_name] = average_columns(dat, new_name)
+#     dat[, old_names] = NULL
+#   }
+#   dat
+# }
 
 # # Just like for TV forecasting, but use GAM prediction error as the outcome and
 # # add GAM outputs as predictors. Also only use business days
@@ -219,119 +180,110 @@ average_3days = function(dat) {
 #   # list(x = out, y = tv)
 # }
 
-# strangely `read_mdim` works fine while `read_ncdf` messes up the coordinates
-# gefs_tv = read_ncdf('results/process_nwp_data/gefs_tv2.nc')
-# gefs_tv2 = read_mdim('results/process_nwp_data/gefs_tv2.nc')
-
-# I don't know why this is such a pain to read
-# wrong dimensions:
-# read_ncdf('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
-# fails, but differently:
-# read_mdim('results/process_nwp_data/gefs_0p25_3day_wmean.nc', variable = "?")
-# works, but many warnings:
-# read_stars('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
-# this will fail if some variables have dimensions in a different order!!
-gefs_0p25_3day = read_mdim('results/process_nwp_data/gefs_0p25_3day_wmean.nc')
-gefs_0p5_3day = read_mdim('results/process_nwp_data/gefs_0p5_3day_wmean.nc')
-gefs_tv = read_mdim('results/process_nwp_data/gefs_tv.nc')
-
-# dim(gefs_0p25_3day['u10', 1, 1, , 1][['u10']])
-
-get_valid_day = function(nc, days_ahead) {
-  # time is generally read by R as a date, due to the 1 day differences
-  attr(nc, 'dimensions')$time$values + days_ahead
-}
-
-prepare_load_task = function(days_ahead = 2, use_gam = TRUE) {
+prepare_load_task = function(network, days_ahead, use_gam = FALSE) {
+  # Note: netcdf files use forecast day, while `system_tv` uses valid day. Must
+  # be consistent!
+  is_system = startsWith(network, 'system')
+  extract_name = if (is_system) 'system' else network
+  out = extract_values(extract_name, days_ahead) %>%
+    subset(select = -eff_temp) # 3-day eff_temp is same as TV
+  # sometimes soilw is all NA? for now just skip it if so
+  if (all(is.na(out$soilw))) {
+    # warning('All soilw values are missing')
+    out$soilw = NULL
+  }
+  # For days_ahead < 2, need to add observed (past) portion of TV to the
+  # forecast portion. TV_sd is correct though, since observations have 0 sd
+  if (days_ahead < 2) {
+    out$TV = with(out, fill_incomplete_tv(TV, valid_day, network, days_ahead))
+  }
+  out$doy = as.POSIXlt(out$valid_day)$yday
+  id = paste('TV', network, days_ahead, sep = '_')
+  tv_name = if (is_system) network else paste0('network.', network)
+  system_tv = all_tvs[, c('day', tv_name)]
+  names(system_tv)[2] = 'tv'
+  # get load data
   gam_loads = gam_fct$forecasts[, days_ahead + 1, ] %>%
     as.data.frame %>%
     cbind(day = gam_fct$model_day + days_ahead) %>%
     subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
   names(gam_loads)[1:4] = paste0('load_', c('pred', 'se', 'err', 'obs'))
-  out_0p25 = gefs_0p25_3day %>%
-    lapply(function(x) x[3, 4,, days_ahead + 1]) %>%
-    as.data.frame %>%
-    subset(select = -eff_temp) %>% # 3-day eff_temp is same as TV
-    transform(day = get_valid_day(gefs_0p25_3day, days_ahead))
-  out_0p5 = gefs_0p5_3day %>%
-    lapply(function(x) x[1, 1,, days_ahead + 1]) %>%
-    as.data.frame %>%
-    transform(day = get_valid_day(gefs_0p5_3day, days_ahead))
-  out_tv = gefs_tv %>%
-    lapply(function(x) x[3, 4, days_ahead + 1, ]) %>%
-    as.data.frame %>%
-    transform(day = get_valid_day(gefs_tv, days_ahead))
-  # For days_ahead < 2, need to add observed (past) portion of TV to the
-  # forecast portion. TV_sd is correct though, since observations have 0 sd
-  if (days_ahead == 1) {
-    out_tv$TV = out_tv$TV +
-      .1 * system_tv$tv[match(out_tv$day, system_tv$day + 1)]
-  }
-  if (days_ahead == 0) {
-    out_tv$TV = out_tv$TV +
-      .2 * system_tv$tv[match(out_tv$day, system_tv$day + 1)] +
-      .1 * system_tv$tv[match(out_tv$day, system_tv$day + 2)]
-  }
-  out = merge(out_0p25, out_0p5, by = 'day') %>%
-    merge(out_tv, by = 'day') %>%
-    merge(gam_loads, by = 'day') %>%
-    transform(doy = as.POSIXlt(day)$yday) %>%
-    subset(select = -day) %>%
-    na.omit
-  id = paste0('Forecast TV ', days_ahead)
   if (use_gam) {
     # Predict the error of the GAM instead of directly predicting load. But we
     # need to leave the observation here so that mlr3 can calculate the MAPE.
     # The error term is calculated later in an mlr3 pipeop.
     # out$load_obs = NULL
     # as_task_regr(out, 'load_err', id = id)
-    out$load_err = NULL
+    out %>%
+      transform(fct_err = TV - system_tv$tv[match(day, system_tv$day)]) %>%
+      subset(select = -day) %>%
+      na.omit %>%
+      as_task_regr('fct_err', id = id)
   } else {
-    out[, c('load_pred', 'load_se', 'load_err')] = NULL
+    out %>%
+      transform(load = gam_loads$load_obs[match(valid_day, gam_loads$day)]) %>%
+      subset(select = -valid_day) %>%
+      na.omit %>%
+      as_task_regr('load', id = id)
   }
-  as_task_regr(out, 'load_obs', id = id)
 }
-# st_extract for interpolation
 
 
-# set up the effective temp data
-# data_wide = readRDS('results/load_vs_weather/tv_and_load.rds')
+# prepare_load_task = function(days_ahead = 2, use_gam = TRUE) {
+#   gam_loads = gam_fct$forecasts[, days_ahead + 1, ] %>%
+#     as.data.frame %>%
+#     cbind(day = gam_fct$model_day + days_ahead) %>%
+#     subset(isBizday(as.timeDate(day), holidays = holidayNYSE(2021:2024)))
+#   names(gam_loads)[1:4] = paste0('load_', c('pred', 'se', 'err', 'obs'))
+#   out_0p25 = gefs_0p25_3day %>%
+#     lapply(function(x) x[3, 4,, days_ahead + 1]) %>%
+#     as.data.frame %>%
+#     subset(select = -eff_temp) %>% # 3-day eff_temp is same as TV
+#     transform(day = get_valid_day(gefs_0p25_3day, days_ahead))
+#   out_0p5 = gefs_0p5_3day %>%
+#     lapply(function(x) x[1, 1,, days_ahead + 1]) %>%
+#     as.data.frame %>%
+#     transform(day = get_valid_day(gefs_0p5_3day, days_ahead))
+#   out_tv = gefs_tv %>%
+#     lapply(function(x) x[3, 4, days_ahead + 1, ]) %>%
+#     as.data.frame %>%
+#     transform(day = get_valid_day(gefs_tv, days_ahead))
+#   # For days_ahead < 2, need to add observed (past) portion of TV to the
+#   # forecast portion. TV_sd is correct though, since observations have 0 sd
+#   if (days_ahead == 1) {
+#     out_tv$TV = out_tv$TV +
+#       .1 * system_tv$tv[match(out_tv$day, system_tv$day + 1)]
+#   }
+#   if (days_ahead == 0) {
+#     out_tv$TV = out_tv$TV +
+#       .2 * system_tv$tv[match(out_tv$day, system_tv$day + 1)] +
+#       .1 * system_tv$tv[match(out_tv$day, system_tv$day + 2)]
+#   }
+#   out = merge(out_0p25, out_0p5, by = 'day') %>%
+#     merge(out_tv, by = 'day') %>%
+#     merge(gam_loads, by = 'day') %>%
+#     transform(doy = as.POSIXlt(day)$yday) %>%
+#     subset(select = -day) %>%
+#     na.omit
+#   id = paste0('Forecast TV ', days_ahead)
+#   if (use_gam) {
+#     # Predict the error of the GAM instead of directly predicting load. But we
+#     # need to leave the observation here so that mlr3 can calculate the MAPE.
+#     # The error term is calculated later in an mlr3 pipeop.
+#     # out$load_obs = NULL
+#     # as_task_regr(out, 'load_err', id = id)
+#     out$load_err = NULL
+#   } else {
+#     out[, c('load_pred', 'load_se', 'load_err')] = NULL
+#   }
+#   as_task_regr(out, 'load_obs', id = id)
+# }
 
-SetUnitSystem('SI')
-tv_vars = c('tair', 'relh')
-nysm_obs = get_combined_nc_data(tv_vars, hour_to_nc_index(7:21)) %>%
-  subset(!(is.na(tair) | is.na(relh))) %>%
-  transform(dwp = GetTDewPointFromRelHum(tair, relh / 100)) %>%
-  transform(tmpf = as_fahrenheit(tair), dwpf = as_fahrenheit(dwp)) %>%
-  subset(select = c(time, stid, tmpf, dwpf)) %>%
-  reshape(direction = 'wide', idvar = 'time', timevar = 'stid')
-
-asos_obs = get_hourly_asos_data(7:21) %>%
-  transform(stid = station, time = valid_hour) %>%
-  subset(!(is.na(tmpf) | is.na(dwpf))) %>%
-  subset(select = c(time, stid, tmpf, dwpf)) %>%
-  reshape(direction = 'wide', idvar = 'time', timevar = 'stid')
-
-station_obs = merge(nysm_obs, asos_obs, all = T)
 
 
-# selected_sites = readRDS('results/select_stations/selected_sites.rds')
-# system_tv_sites = readRDS('results/select_stations/system_results.rds')$stids
-# system_tv_sites = c("BKNYRD", "BKMAPL", "QNDKIL", "JFK", "SIFKIL", "LGA",
-#                     "QNSOZO", "MHMHIL")
-system_tv_sites = c('NYC', 'LGA')
-system_tv = get_combined_tv(system_tv_sites)
-# only 400 of these, clearly I should collect more weather data for this step.
-# Note that this data is only May-September (technically April 29th)
-
-# gefs = read_ncdf('data/gefs_nick.nc')
-
-# predict daily value (effective temp) instead of TV
-system_eff_tmp = get_combined_eff_tmp(system_tv_sites)
-# only 400 of these, clearly I should collect more weather data for this step
 
 # out = list(model_day = forecast_days, gam_forecasts)
-gam_fct = readRDS('results/load_curve_forecast/gam_forecasts.rds')
+
 
 # loads = read.csv('data/coned/Borough and System Data 2020-2024.csv') %>%
 #   transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M'),
@@ -380,24 +332,22 @@ gam_fct = readRDS('results/load_curve_forecast/gam_forecasts.rds')
 # 6   7 3.236689 4.133973
 
 
-# try to simplify this using mlr3
-# install.packages(c('ranger', 'drf', 'RandomForestsGLS'))
-# remotes::install_github("mlr-org/mlr3temporal")
-# distr6_repos =  c(CRAN = 'https://cloud.r-project.org',
-#                   raphaels1 = 'https://raphaels1.r-universe.dev')
-# install.packages('distr6', repos = distr6_repos)
-library(mlr3)
-library(mlr3learners)
-library(mlr3tuning)
-library(mlr3tuningspaces)
-library(mlr3temporal)
-library(mlr3pipelines)
 
-# see notes in `?benchmark` and `?mlr_tuners_random_search`
-lgr::get_logger("mlr3")$set_threshold("warn")
-lgr::get_logger("bbotk")$set_threshold("warn")
-# lgr::get_logger("mlr3")$set_threshold("trace")
-# lgr::get_logger("bbotk")$set_threshold("trace")
+# Ok forget all the GAM stuff for now. Just running a neural network. Including
+# time predictor to allow for nonstationarity. Will have to run incremental
+# updates over time. For this version, neither NGR nor random forest make much
+# sense (nonlinear main effect, and requires extrapolation)
+
+# just doing an MLP now, but will want to change to DRN. Also why does MLP only
+# support dropout? Probably need to extend base torch class to support
+# distributional regression
+lrn("regr.mlp", ...)
+
+# needed for evaluating nonstationary model
+rsmp("forecast_cv")
+
+
+
 
 
 # I think the plan is that we run this benchmark over all the models
