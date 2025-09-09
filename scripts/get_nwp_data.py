@@ -1,7 +1,7 @@
 '''Download and organize NWP forecasts.
 '''
 
-import os, glob, dask
+import os, dask, time, warnings
 # os.chdir('..')
 # https://docs.xarray.dev/en/stable/user-guide/dask.html#reading-and-writing-data
 os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
@@ -227,17 +227,35 @@ def download_collections(all_collections_args):
         print(f'Starting collection {i+1} of {len(collections)}')
         collection.download()
 
-print(f'Starting analysis/backfill collections ...')
+print('Starting analysis/backfill collections ...')
 download_collections(gefs_all_collections_args)
 
 # now we incrementally download the fxx of the most recent forecast
-print(f'Starting forecast collections ...')
+print('Starting forecast collections ...')
+
+# upload timings:
+
+# pgrb2s.0p25:
+# gec00: 2025-09-05 06:19:43
+# gep01: 2025-09-05 06:23:39
+# gep30: 2025-09-05 06:23:40
+# pgrb2a.0p5 spr: 2025-09-05 06:23:41
+# pgrb2b.0p5 gep30: 2025-09-05 06:23:41
+# geavg: 2025-09-05 06:24:54
+# gespr: 2025-09-05 06:24:55
+
+# failed file:
+# geavg.t06z.pgrb2s.0p25.f156.idx: 2025-09-07 06:54:16
+# gespr.t06z.pgrb2s.0p25.f156.idx: 2025-09-07 06:54:15
+# but error occurred at 2025-09-07 10:53:50,090?
 
 # latest_fxx = gefs_fxx_fct[0]
 latest_fxx = 0
 while latest_fxx < gefs_fxx_fct[-1]:
     next_fxx = latest_fxx + 3
-    H = HerbieLatest(model="gefs", fxx=next_fxx, member=30)
+    # check for the spread file, because it's the last to be written
+    H = HerbieLatest(model="gefs", product='atmos.25', fxx=next_fxx,
+                     member='spr')
     if H.date >= runs_fct[0]:
         latest_fxx = next_fxx
     else:
@@ -248,8 +266,21 @@ all_downloaded = False
 while not all_downloaded:
     new_fxx = [ fxx for fxx in gefs_fxx_fct
                 if fxx > cur_fxx and fxx <= min(latest_fxx, gefs_fxx_fct[-1]) ]
+    print(f'Getting fxx up to {str(new_fxx[-1])} at {str(datetime.today())}')
     fct_collections = get_fct_collection(new_fxx)
-    download_collections(fct_collections)
+    # keep trying for a maximum of 10 minutes if needed
+    max_tries = 20
+    ntry = 1
+    while ntry <= max_tries:
+        try:
+            download_collections(fct_collections)
+            break
+        except:
+            time.sleep(30)
+        ntry += 1
+    if ntry > max_tries:
+        # something went wrong
+        warnings.warn(f'Failed to download fxx {str(new_fxx[-1])}')
     cur_fxx = new_fxx[-1]
     if cur_fxx == gefs_fxx_fct[-1]:
         all_downloaded = True
@@ -257,7 +288,8 @@ while not all_downloaded:
         # wait for the next fxx
         next_fxx = latest_fxx + 3
         HerbieWait(run=runs_fct[0], model='gefs', product='atmos.25',
-                   fxx=next_fxx, wait_for='1h', check_interval='60s')
+                   member='spr', fxx=next_fxx, wait_for='1h',
+                   check_interval='60s')
         latest_fxx = next_fxx
 
 

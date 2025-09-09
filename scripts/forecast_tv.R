@@ -13,6 +13,8 @@ library(stars) # also requires ncmeta
 library(mlr3)
 source('R/mlr3_distr.R')
 
+out_dir = '/mnt/coe/web/coeweather/coned/forecasts'
+
 # see notes in `?benchmark` and `?mlr_tuners_random_search`
 lgr::get_logger("mlr3")$set_threshold("warn")
 lgr::get_logger("bbotk")$set_threshold("warn")
@@ -123,7 +125,7 @@ tv_models = readRDS('results/forecast_tv/tv_models.rds')
 cur_date = as.Date(attr(gefs_3day, 'dimensions')$time$values)
 out_file = format(cur_date, '%Y_%m%d') %>%
   paste0('forecast_tv_', ., '.csv') %>%
-  file.path('scripts', 'forecasts', .)
+  file.path(out_dir, .)
 
 preds = names(tv_models) %>%
   lapply(get_predictions) %>%
@@ -132,10 +134,14 @@ preds = names(tv_models) %>%
   transform(forecast_for = forecast_made + days_ahead) %>%
   subset(select = c(network, forecast_made, forecast_for, days_ahead, tv_mean,
                     tv_sd)) %>%
-  transform(tv_mean = round(tv_mean, 2), tv_sd = round(tv_sd, 2))
+  transform(tv_lower95 = tv_mean - 1.96 * tv_sd,
+            tv_upper95 = tv_mean + 1.96 * tv_sd) %>%
+  transform(tv_mean = round(tv_mean, 2), tv_sd = round(tv_sd, 2),
+            tv_lower95 = round(tv_lower95, 2),
+            tv_upper95  = round(tv_upper95, 2))
 
 write.csv(preds, file = out_file, row.names = FALSE)
-
+message('Wrote forecast file')
 
 # library(ggplot2)
 # # library(tidyr)
