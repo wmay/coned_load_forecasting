@@ -177,7 +177,7 @@ peaks = list.files('data/coned', 'Network.*\\.csv', full.names = T) %>%
             Network = replace(Network, Network == '#N/A', NA)) %>%
   transform(DT = as.POSIXct(DT, tz = 'EST5EDT',
                             tryFormats = c('%m/%d/%Y %H:%M:%S', '%m/%d/%Y %H:%M'))) %>%
-  subset(!BAD & !is.na(DT)) %>%
+  subset(!BAD & !is.na(DT) & !is.na(Network)) %>%
   subset(as.POSIXlt(DT)$hour %in% 9:21) %>%
   # get daily load peaks
   transform(day = as.Date(DT, tz = 'EST5EDT')) %>%
@@ -188,11 +188,11 @@ peaks_wide = reshape(peaks, direction = 'wide', idvar = 'day',
 
 bus_days = isBizday(as.timeDate(peaks_wide$day), holidays = holidayNYSE(2021:2025))
 
-# is there an extra network?
-peak_ids = sub('reading.', '', names(peaks_wide)[-1], fixed = T)
-peak_ids[!peak_ids %in% networks$id]
-min(peaks_wide$day[!is.na(peaks_wide$reading.47M)]) # 2025-05-01
-# hunh
+# # is there an extra network?
+# peak_ids = sub('reading.', '', names(peaks_wide)[-1], fixed = T)
+# peak_ids[!peak_ids %in% networks$id]
+# min(peaks_wide$day[!is.na(peaks_wide$reading.47M)]) # 2025-05-01
+# # hunh
 
 # also need the system data
 sys1 = read.csv('data/coned/Network Data - SUNY 2025_05_01-2025_07_10.csv',
