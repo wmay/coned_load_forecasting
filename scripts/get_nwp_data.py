@@ -254,8 +254,8 @@ latest_fxx = 0
 while latest_fxx < gefs_fxx_fct[-1]:
     next_fxx = latest_fxx + 3
     # check for the spread file, because it's the last to be written
-    H = HerbieLatest(model="gefs", product='atmos.25', fxx=next_fxx,
-                     member='spr')
+    H = HerbieLatest(model="gefs", priority=['aws'], product='atmos.25',
+                     fxx=next_fxx, member='spr')
     if H.date >= runs_fct[0]:
         latest_fxx = next_fxx
     else:
@@ -287,9 +287,9 @@ while not all_downloaded:
     else:
         # wait for the next fxx
         next_fxx = latest_fxx + 3
-        HerbieWait(run=runs_fct[0], model='gefs', product='atmos.25',
-                   member='spr', fxx=next_fxx, wait_for='1h',
-                   check_interval='60s')
+        HerbieWait(run=runs_fct[0], model='gefs', priority=['aws'],
+                   product='atmos.25', member='spr', fxx=next_fxx,
+                   wait_for='1h', check_interval='60s')
         latest_fxx = next_fxx
 
 
