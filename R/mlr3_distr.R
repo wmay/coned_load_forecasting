@@ -195,6 +195,9 @@ MeasureRegrCRPS = R6::R6Class(
     ),
     private = list(
         .score = function(prediction, ...) {
+          # Note that the predictions will be out of order if used after
+          # `Prediction$filter()`. See
+          # https://github.com/mlr-org/mlr3/issues/1400
           dist_types = unique(prediction$distr$modelTable$Distribution)
           if (length(dist_types) > 1) stop('All predictions must use the same distribution type')
           
@@ -203,6 +206,11 @@ MeasureRegrCRPS = R6::R6Class(
 
           # then, use the corresponding CRPS method
           if (dist_type == 'Normal') {
+            # check for wrong order
+            resp1 = prediction$response
+            resp2 = unlist(prediction$distr$getParameterValue('mean'))
+            in_order = all(resp1 == resp2)
+            if (!in_order) stop('Inconsistent responses, likely due to `filter` bug')
             mean = unlist(prediction$distr$getParameterValue('mean'))
             sd = unlist(prediction$distr$getParameterValue('sd'))
             pred_crps = scoringRules::crps_norm(prediction$truth, mean = mean, sd = sd)
