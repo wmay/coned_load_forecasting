@@ -761,7 +761,7 @@ l2$param_set$set_values(
 tt = l2 %>%
   PipeOpLearner$new() %>%
   ppl("targettrafo", trafo_pipeop = PipeOpTargetCategScale$new(), graph = .)
-gl = po("scale") %>>% tt %>%
+gl = po('fixfactors') %>>% po('scale') %>>% tt %>%
   as_learner
 set_validate(gl$base_learner(), validate = .2)
 # internal validation with pipeline notes here:
