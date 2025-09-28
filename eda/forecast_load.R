@@ -35,12 +35,12 @@ library(future)
 library(mlr3)
 library(torch)
 library(mlr3torch)
-library(mlr3learners)
+# library(mlr3learners)
 library(mlr3tuning)
-# library(mlr3tuningspaces)
 library(mlr3pipelines)
 library(mlr3temporal)
-library(mlr3proba)
+# library(mlr3proba)
+library(ggplot2)
 source('R/mlr3_additions.R') # block CV, mean pinball loss, etc.
 source('R/mlr3_distr.R')
 
@@ -154,6 +154,10 @@ prepare_load_task_all_networks = function(network_ids = networks$id) {
     lapply(function(x) {
       # add the network as a predictor
       network_id = sub('load_', '', x$id)
+      # remove soilw since some networks don't have it
+      if ('soilw' %in% x$feature_names) {
+        x$select(setdiff(x$feature_names, 'soilw'))
+      }
       x$cbind(data.frame(network = rep(network_id, x$nrow)))
     })
   out_task = network_tasks[[1]]
@@ -170,24 +174,99 @@ prepare_load_task_all_networks = function(network_ids = networks$id) {
   out_task
 }
 
+categ_scale_target = function(task, scale_params) {
+  old_target = task$data(cols = task$target_names)
+  network = task$data()$network
+  # scale each network's loads
+  new_target = (old_target - scale_params[network, 'mean']) /
+    scale_params[network, 'sd']
+  # I'm honestly confused about how the duplicate columns are handled but it
+  # seems to work
+  task$cbind(new_target)
+  convert_task(task, target = colnames(new_target), drop_original_target = TRUE,
+               drop_levels = FALSE)
+}
+
+# can use this to flexibly transform target variable. Also see
+# https://github.com/mlr-org/mlr3pipelines/issues/956
+PipeOpTargetCategScale = R6::R6Class("PipeOpTargetCategScale",
+  inherit = PipeOpTargetTrafo,
+  public = list(
+    initialize = function(id = "targetscale") super$initialize(id = id)
+  ),
+  private = list(
+    .transform = function(task, phase) {
+      old_target = task$data(cols = task$target_names)
+      network = task$data()$network
+      if (phase == 'train') {
+        # get the scale factors
+        self$state$scale_params = old_target %>%
+          by(network, function(x) c(mean = mean(x$load), sd = sd(x$load))) %>%
+          sapply(identity) %>%
+          t
+      }
+      internal_valid = NULL
+      if (!is.null(task$internal_valid_task)) {
+        # preserve internal validation task
+        internal_valid = task$internal_valid_task
+      }
+      # including the function definition here because the future package
+      # doesn't automatically export it
+      categ_scale_target = function(task, scale_params) {
+        old_target = task$data(cols = task$target_names)
+        network = task$data()$network
+        # scale each network's loads
+        new_target = (old_target - scale_params[network, 'mean']) /
+          scale_params[network, 'sd']
+        # I'm honestly confused about how the duplicate columns are handled but it
+        # seems to work
+        task$cbind(new_target)
+        convert_task(task, target = colnames(new_target), drop_original_target = TRUE,
+                     drop_levels = FALSE)
+      }
+      out = categ_scale_target(task, self$state$scale_params)
+      # out = convert_task(task, target = colnames(new_target), new_type = private$.new_task_type, drop_original_target = TRUE, drop_levels = FALSE)
+      if (!is.null(internal_valid)) {
+        out$internal_valid_task =
+          categ_scale_target(internal_valid, self$state$scale_params)
+      }
+      out
+    },
+    .train_invert = function(task) {
+      # return a predict_phase_state object (can be anything)
+      list(network = task$data()$network)
+    },
+    .invert = function(prediction, predict_phase_state) {
+      orig_means = unlist(prediction$distr$getParameterValue('mean'))
+      orig_sds = unlist(prediction$distr$getParameterValue('sd'))
+      offsets = self$state$scale_params[predict_phase_state$network, 'mean']
+      scales = self$state$scale_params[predict_phase_state$network, 'sd']
+      new_means = (orig_means * scales) + offsets
+      new_sds = orig_sds * scales
+      new_truth = (prediction$truth * scales) + offsets
+      distrs = data.frame(mean = new_means, sd = new_sds) %>%
+        distr6::VectorDistribution$new(distribution = "Normal",
+                                       params = .)
+      PredictionRegr$new(row_ids = prediction$row_ids,
+                         truth = new_truth, distr = distrs)
+    }
+  )
+)
+# mlr_pipeops$add("targetmutate", PipeOpTargetMutate)
+
 plot_loss = function(learner, loss, skip = 0, scale = NULL, train = TRUE) {
   with(learner$model$callbacks, {
     h = as.data.frame(history)
-    if (skip) {
-      h = tail(h, -skip)
-    }
-    tloss = h[, paste0('train.', loss)]
-    vloss = h[, paste0('valid.', loss)]
-    if (!is.null(scale)) {
-      tloss = tloss * scale
-      vloss = vloss * scale
-    }
+    if (skip) h = tail(h, -skip)
+    if (is.null(scale)) scale = 1
+    vloss = h[, paste0('valid.', loss)] * scale
     if (train) {
+      tloss = h[, paste0('train.', loss)] * scale
       ylim = range(c(tloss, vloss))
       plot(h$epoch, tloss, type = 'l', ylim = ylim, xlab = 'Epoch', ylab = loss)
       points(h$epoch, vloss, type = 'l', col = 'blue')
     } else {
-      plot(h$epoch, vloss, type = 'l', xlab = 'Epoch', ylab = loss)
+      plot(h$epoch, vloss, type = 'l', xlab = 'Epoch', ylab = loss, col = 'blue')
     }
   })
   grid(nx = NA, ny = NULL)
@@ -678,135 +757,86 @@ drn_emb = nn_module("drn_emb",
   }
 )
 
-# can use this to flexibly transform target variable
-PipeOpTargetCategScale = R6::R6Class("PipeOpTargetCategScale",
-  inherit = PipeOpTargetTrafo,
+CallbackSetBatchHistory = R6::R6Class("CallbackSetBatchHistory",
+  inherit = mlr3torch::CallbackSetHistory,
+  lock_objects = FALSE,
   public = list(
-    initialize = function(id = "targetscale") super$initialize(id = id)
-  ),
-  private = list(
-    .transform = function(task, phase) {
-      # print(self$state)
-      old_target = task$data(cols = task$target_names)
-      network = task$data()$network
-      if (phase == 'train') {
-        # get the scale factors
-        self$state$scale_params = old_target %>%
-          by(network, function(x) c(mean = mean(x$load), sd = sd(x$load))) %>%
-          sapply(identity) %>%
-          t
-      }
-      # scale each network's loads
-      new_target = (old_target - self$state$scale_params[network, 'mean']) /
-        self$state$scale_params[network, 'sd']
-      # new_target = self$param_set$values$trafo(task$data(cols = task$target_names))
-      if (!is.data.frame(new_target) && !is.matrix(new_target)) {
-        stopf("Hyperparameter 'trafo' must be a function returning a 'data.frame', 'data.table', or 'matrix', not '%s'.", class(new_target)[[1L]])
-      }
-      task$cbind(new_target)
-      convert_task(task, target = colnames(new_target), new_type = private$.new_task_type, drop_original_target = TRUE, drop_levels = FALSE)
+    #' @description
+    #' Initializes lists where the train and validation metrics are stored.
+    on_begin = function() {
+      self$train = list(list(epoch = numeric(0)))
+      self$valid = list(list(epoch = numeric(0)))
+      self$batch_idx = 0
     },
-    .train_invert = function(task) {
-      # return a predict_phase_state object (can be anything)
-      list(network = task$data()$network)
+    #' @description
+    #' Converts the lists to data.tables.
+    state_dict = function() {
+      train = data.table::rbindlist(self$train, fill = TRUE)
+      colnames(train)[-(1:2)] = paste0("train.", colnames(train)[-(1:2)])
+      valid = data.table::rbindlist(self$valid, fill = TRUE)
+      colnames(valid)[-(1:2)] = paste0("valid.", colnames(valid)[-(1:2)])
+      state = if (nrow(valid) == 0 && nrow(train) == 0) {
+        data.table::data.table(epoch = numeric(0))
+      } else if (nrow(valid) == 0) {
+        train
+      } else if (nrow(train) == 0) {
+        valid
+      } else {
+        merge(train, valid, by = c("epoch", 'step'))
+      }
+      if (is.null(self$prev_state)) {
+        state
+      } else {
+        rbind(state, self$prev_state)
+      }
     },
-    .invert = function(prediction, predict_phase_state) {
-      orig_means = unlist(prediction$distr$getParameterValue('mean'))
-      orig_sds = unlist(prediction$distr$getParameterValue('sd'))
-      # print(head(self$state$scale_params))
-      offsets = self$state$scale_params[predict_phase_state$network, 'mean']
-      scales = self$state$scale_params[predict_phase_state$network, 'sd']
-      new_means = (orig_means * scales) + offsets
-      new_sds = orig_sds * scales
-      new_truth = (prediction$truth * scales) + offsets
-      # print(head(data.frame(mean = new_means, sd = new_sds)))
-      distrs = data.frame(mean = new_means, sd = new_sds) %>%
-        distr6::VectorDistribution$new(distribution = "Normal",
-                                       params = .)
-      PredictionRegr$new(row_ids = prediction$row_ids,
-                         truth = new_truth, distr = distrs)
-    }
+    #' @description
+    #' Add the latest training scores to the history.
+    on_batch_end = function() {
+      self$batch_idx = self$batch_idx + 1
+      if (self$batch_idx %% 5 != 0) return()
+      if (length(self$ctx$last_loss)) {
+        self$train[[length(self$train) + 1]] = c(
+          list(epoch = self$ctx$epoch, step = self$ctx$step),
+          self$ctx$last_loss
+        )
+        # we need to calculate valid loss
+        ctx = self$ctx
+        task_valid = self$ctx$task_valid
+        ctx$network$eval()
+        pred_tensor = mlr3torch:::torch_network_predict_valid(ctx)
+        truth_tensor = task_valid$data(cols = task_valid$target_names) %>%
+          as.matrix %>%
+          torch_tensor
+        last_scores_valid = ctx$loss_fn(pred_tensor, truth_tensor)$item()
+        ctx$network$train()
+        self$valid[[length(self$valid) + 1]] = c(
+          list(epoch = self$ctx$epoch, step = self$ctx$step),
+          last_scores_valid
+        )
+      }
+    },
+    #' @description
+    #' Add the latest training scores to the history.
+    on_before_valid = function() {},
+    #' @description
+    #' Add the latest validation scores to the history.
+    on_epoch_end = function() {}
   )
 )
-# mlr_pipeops$add("targetmutate", PipeOpTargetMutate)
-
-# networks_task = prepare_load_task_all_networks()
-# because that's a lot
-networks_task = prepare_load_task_all_networks(sample(networks$id, 5))
-
-drn_emb_params = ps(
-    size_hidden = p_int(lower = 1L, tags = "train"),
-    size_emb = p_int(lower = 1L, tags = "train")
-)
-l2 = LearnerTorchModuleDistr$new(
-    module_generator = drn_emb,
-    param_set = drn_emb_params,
-    task_type = 'regr',
-    ingress_tokens = list(x_num = ingress_num(), x_cat = ingress_categ()),
-    optimizer = NULL,
-    loss = nn_normal_crps_loss,
-    callbacks = t_clbk("history"),
-    predict_types = 'distr'
-)
-l2$param_set$set_values(
-  epochs = 10, batch_size = 1024, device = "cpu",
-  size_hidden = 16,
-  size_emb = 2,
-  opt.lr = 0.005, opt.weight_decay = .025,
-  # Measures to track
-  measures_valid = msrs(c('regr.crps', 'regr.mae')),
-  measures_train = msrs(c('regr.crps', 'regr.mae'))
-)
-# set_validate(l2, .2)
-tt = l2 %>%
-  PipeOpLearner$new() %>%
-  ppl("targettrafo", trafo_pipeop = PipeOpTargetCategScale$new(), graph = .)
-gl = po('fixfactors') %>>% po('scale') %>>% tt %>%
-  as_learner
-set_validate(gl$base_learner(), validate = .2)
-# internal validation with pipeline notes here:
-# https://mlr3book.mlr-org.com/chapters/chapter15/predsets_valid_inttune.html
-
-system.time(gl$train(networks_task))
-#    user  system elapsed 
-# 117.173   0.016 116.058 # CPU work
-#    user  system elapsed 
-# 115.089   0.150 114.114 # CPU work, intel mkl
- #   user  system elapsed 
- # 64.964   0.863  62.511 # GPU home
- #   user  system elapsed 
- # 62.633   0.083  58.601 # CPU home (lol)
-# I think the home laptop is using turbo and switching CPU cores, which won't be
-# sustainable if I run many in parallel
-
-#    user  system elapsed 
-# 106.096   0.047 105.326 # 5 batches of 1024
-#     user   system  elapsed 
-# 5593.180    5.111 5612.521 # 50 batches of 1024
-# runtime seems to scale non-linearly with dataset size. I don't get why
-
-# rt50 ~= rt5 * 50, but why?
-
-plot_loss(gl$base_learner(), 'regr.crps', 0)
-plot_loss(gl$base_learner(), 'regr.mae', 0)
-
-pred = gl$predict(networks_task2)
-
-pred %>%
-  as.data.table %>%
-  head %>%
-  subset(select = -distr)
-
-pred$distr$getParameterValue('mean') %>%
-  head %>%
-  unlist
-
-pred$distr$getParameterValue('sd') %>%
-  head %>%
-  unlist
+mlr3torch_callbacks$add("batchhistory", function() {
+  TorchCallback$new(
+    callback_generator = CallbackSetBatchHistory,
+    param_set = ps(),
+    id = "batchhistory",
+    label = "Batch History",
+    man = "mlr3torch::mlr_callback_set.history"
+  )
+})
 
 get_network_msrs = function(network, task) {
   print(network)
+  categ_scale_target # help future know to export this
   network_rows = which(task$data(cols = 'network')$network == network)
   network_row_ids = task$row_ids[network_rows]
   n_task = task$data(network_row_ids) %>%
@@ -830,10 +860,175 @@ get_network_msrs = function(network, task) {
     subset(select = c(network, days_ahead, regr.crps, regr.mae, regr.mape))
 }
 
-res2 = networks_task$data()$network %>%
+drn_emb_params = ps(
+    size_hidden = p_int(lower = 1L, tags = "train"),
+    size_emb = p_int(lower = 1L, tags = "train")
+)
+l2 = LearnerTorchModuleDistr$new(
+    module_generator = drn_emb,
+    param_set = drn_emb_params,
+    task_type = 'regr',
+    ingress_tokens = list(x_num = ingress_num(), x_cat = ingress_categ()),
+    optimizer = NULL,
+    loss = nn_normal_crps_loss,
+    # callbacks = t_clbks(c("history", "batchhistory")),
+    callbacks = t_clbks(c('batchhistory')),
+    predict_types = 'distr'
+)
+l2$param_set$set_values(
+  epochs = 5, batch_size = 1024, device = "cpu",
+  size_hidden = 16,
+  size_emb = 2,
+  opt.lr = 0.002, opt.weight_decay = .025#,
+  # Measures to track
+  # measures_valid = msrs(c('regr.crps', 'regr.mae')),
+  # measures_train = msrs(c('regr.crps', 'regr.mae'))
+)
+# msrs(c('time_train', 'time_predict'))
+# set_validate(l2, .2)
+tt = l2 %>%
+  PipeOpLearner$new() %>%
+  ppl("targettrafo", trafo_pipeop = PipeOpTargetCategScale$new(), graph = .)
+gl = po('fixfactors') %>>% po('scale') %>>% tt %>%
+  as_learner
+set_validate(gl, validate = 'predefined')
+# internal validation with pipeline notes here:
+# https://mlr3book.mlr-org.com/chapters/chapter15/predsets_valid_inttune.html
+
+# networks_task = prepare_load_task_all_networks()
+# because that's a lot
+networks_task = prepare_load_task_all_networks(sample(networks$id, 30))
+# use last available month as validation
+task_dates = as.Date(networks_task$data()$fct_run)
+networks_task$internal_valid_task = networks_task$row_ids[task_dates > '2024-09-01']
+
+# how long do these take to run?
+
+# Most of the time is taken by the callback! in `distr6::VectorDistribution$new`
+# epochs x (nrow(training) + nrow(validation))
+# skip the training data evaluation for huge speed up!
+
+# Also some time training
+# O(epochs x nrow(training))
+
+system.time(gl$train(networks_task))
+ #   user  system elapsed 
+ # 10.781   0.039   8.056 # home, CPU, 10 epochs, 10 networks
+ #   user  system elapsed 
+ # 10.650   0.169   8.049 # home, cuda, 10 epochs, 10 networks
+ #   user  system elapsed 
+ # 13.596   0.760  12.026 # home, intel mkl, 10 epochs, 10 networks
+
+plot_loss(gl$base_learner(), 'regr.crps', 0, train = FALSE)
+plot_loss(gl$base_learner(), 'regr.mae', 0, train = FALSE)
+
+with(gl$base_learner()$model$callbacks$batchhistory, {
+  x = 25 * seq_len(length(train.V1))
+  # ylim = c(0, max(c(train.V1, valid.regr.crps)))
+  ylim = range(c(train.V1, valid.V1))
+  plot(x, train.V1, type = 'l', ylim = ylim)
+  lines(x, valid.V1, col = 'blue')
+  grid(nx = NA, ny = NULL)
+})
+
+##########
+# Tuning
+##########
+
+task_tune = prepare_load_task_all_networks(sample(networks$id, 10))
+# no manual validation
+
+l2 = LearnerTorchModuleDistr$new(
+    module_generator = drn_emb,
+    param_set = drn_emb_params,
+    task_type = 'regr',
+    ingress_tokens = list(x_num = ingress_num(), x_cat = ingress_categ()),
+    optimizer = NULL,
+    loss = nn_normal_crps_loss,
+    # callbacks = t_clbks(c("history", "batchhistory")),
+    callbacks = t_clbks(c('batchhistory')),
+    predict_types = 'distr'
+)
+l2$param_set$set_values(
+  epochs = 5, batch_size = 1024, device = "cpu",
+  size_hidden = to_tune(8:32),
+  size_emb = to_tune(1:8),
+  opt.lr = to_tune(.0005, .01, TRUE),
+  opt.weight_decay = to_tune(.005, .05, TRUE)
+)
+tt = l2 %>%
+  PipeOpLearner$new() %>%
+  ppl("targettrafo", trafo_pipeop = PipeOpTargetCategScale$new(), graph = .)
+gl = po('fixfactors') %>>% po('scale') %>>% tt %>%
+  as_learner
+# set_validate(gl, validate = 'predefined')
+set_validate(gl, validate = 'test')
+
+# does it work with tune?
+# learner0$param_set$set_values(
+#                       epochs = 1000, batch_size = 128, device = "cpu",
+#                       neurons = to_tune(5:50),
+#                       p = 0,
+#                       opt.lr = to_tune(1e-3, .1, TRUE),
+#                       opt.weight_decay = to_tune(1e-4, 1, TRUE),
+#                       measures_train = msrs(c("regr.mae", "regr.crps", "regr.logloss"))
+#                    )
+# task_sc = prepare_load_task('6B', 0, use_gam = FALSE)$data() %>%
+#   scale %>%
+#   as_task_regr(target = 'load')
+# set_validate(learner0, 'test')
+# set_validate(learner0, .2)
+
+# future::plan('multicore', workers = 4) # cuda issue
+future::plan('multisession', workers = 4)
+# future::plan('sequential')
+
+tinstance = tune(
+  tuner = tnr("random_search"),
+  task = task_tune,
+  learner = gl,
+  resampling = rsmp("holdout", ratio = 5 / 6),
+  measure = msr('regr.crps'),
+  # measure = msr("internal_valid_score",
+  #               select = "regr.mlplss.regr.logloss", minimize = TRUE),
+  term_evals = 2,
+  store_models = T
+)
+
+t1 = tinstance$archive$learners(1)[[1]]$base_learner()
+
+with(t1$model$callbacks$batchhistory, {
+  x = 25 * seq_len(length(train.V1))
+  # ylim = c(0, max(c(train.V1, valid.regr.crps)))
+  ylim = range(c(train.V1, valid.V1))
+  plot(x, train.V1, type = 'l', ylim = ylim)
+  lines(x, valid.V1, col = 'blue')
+  grid(nx = NA, ny = NULL)
+})
+
+
+# pred = gl$predict(networks_task2)
+# pred %>%
+#   as.data.table %>%
+#   head %>%
+#   subset(select = -distr)
+# pred$distr$getParameterValue('mean') %>%
+#   head %>%
+#   unlist
+# pred$distr$getParameterValue('sd') %>%
+#   head %>%
+#   unlist
+
+plan(multisession, workers = 4)
+# plan(multicore, workers = 4)
+
+library(future.apply)
+
+res = networks_task$data()$network %>%
   unique %>%
   as.character %>%
   # head %>%
+  # future_lapply(get_network_msrs, task = networks_task, future.seed=TRUE) %>%
   lapply(get_network_msrs, task = networks_task) %>%
   do.call(rbind, .)
 
@@ -846,13 +1041,12 @@ res %>%
 res %>%
   aggregate(regr.mae ~ days_ahead, FUN = mean)
 
-library(ggplot2)
-
 ggplot(res2, aes(days_ahead, regr.mae, group = network)) + geom_line()
 
-ggplot(res2, aes(days_ahead, regr.mape * 100, group = network)) +
+ggplot(res, aes(days_ahead, regr.mape * 100, group = network)) +
   geom_line(color = '#00000066') +
-  stat_summary(aes(group = 1), geom = 'line', colour = 'blue', linewidth = 1.5) +
+  stat_summary(aes(group = 1), fun = mean, geom = 'line', colour = 'blue',
+               linewidth = 1.5) +
   ylim(c(0, NA))
 
 
