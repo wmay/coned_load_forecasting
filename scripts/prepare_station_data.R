@@ -69,8 +69,8 @@ asos_obs = stations %>%
   getElement('stid') %>%
   paste0('K', .) %>%
   lapply(riem_measures, date_start = cur_date - 7) %>%
+  lapply(asos_raw_to_hourly) %>%
   do.call(rbind, .) %>%
-  asos_raw_to_hourly %>%
   subset(as.POSIXlt(valid_hour)$hour %in% 7:21) %>%
   transform(stid = station, time = valid_hour) %>%
   subset(!(is.na(tmpf) | is.na(dwpf))) %>%
