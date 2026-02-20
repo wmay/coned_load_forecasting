@@ -3,7 +3,7 @@ library(shiny)
 library(magrittr)
 library(ggplot2)
 library(sf)
-library(dygraphs)
+library(plotly)
 
 networks = readRDS('../results/maps/coned_networks_cleaned.rds') %>%
   transform(idnum = as.integer(sub('[A-Z]', '', id)),
@@ -14,8 +14,9 @@ networks = networks[with(networks, order(idlet, idnum)), ]
 network_choices = c('System (official ConEd TV)' = 'system.orig',
                     'System (new UAlbany TV)' = 'system.new',
                     setNames(networks$id, networks$label))
-  
-# day_choices = setNames(0:7, networks$label)
+
+tv_dat = read.csv('../scripts/data/tv.csv') %>%
+  transform(day = as.Date(day))
 
 forecast_file = list.files('../scripts/forecasts/', full.names = T) %>%
   max
@@ -37,6 +38,7 @@ ui = fluidPage(
         class = 'page-header'
     ),
     h3(date_note, style = 'font-style: italic;'),
+    hr(),
     # wellPanel(
     #     selectInput('network', 'Network:', network_choices, width = 400),
     #     selectInput('day', 'Map day', 0:7),
@@ -62,8 +64,7 @@ ui = fluidPage(
         column(6,
                h3('Network details'),
                selectInput('network', 'Network', network_choices, width = 400),
-               # plotOutput('plot_ts'),
-               dygraphOutput('plot_ts2'),
+               plotlyOutput('plot_ts'),
                tableOutput('table_ts'),
                style = 'border-left: #EEE solid 1px;'
                )
@@ -95,53 +96,43 @@ ui = fluidPage(
 )
 
 server <- function(input, output) {
-  output$plot_ts <- renderPlot({
-    preds_n = preds[preds$network == input$network, ]
+  output$plot_ts <- renderPlotly({
+    preds_n = preds[preds$network == input$network, ] %>%
+      subset(select = c(forecast_for, tv_mean, tv_lower95, tv_upper95))
     if (startsWith(input$network, 'system')) {
       if (input$network == 'system.orig') {
         network_name = 'System (official ConEd TV)'
       } else {
         network_name = 'System (new UAlbany TV)'
       }
+      tv_col = input$network
     } else {
       network_name = networks$label[networks$id == input$network]
+      tv_col = paste0('network.', input$network)
     }
     ts_title = paste('TV Forecast for', network_name)
     y_label = paste(input$network, 'TV')
-    ggplot(preds_n, aes(x = forecast_for, y = tv_mean)) +
-      geom_ribbon(aes(ymin = tv_lower95, ymax = tv_upper95), fill = "#66666666") +
-      geom_line() +
-      ylim(min(preds_n$tv_lower95, na.rm = T),
-           max(preds_n$tv_upper95, na.rm = T)) +
-      xlab('Date') + ylab('TV') +
-      ggtitle(ts_title)
-  }, res = 120)
-  output$plot_ts2 <- renderDygraph({
-    preds_n = preds[preds$network == input$network, ]
-    if (startsWith(input$network, 'system')) {
-      if (input$network == 'system.orig') {
-        network_name = 'System (official ConEd TV)'
-      } else {
-        network_name = 'System (new UAlbany TV)'
-      }
-    } else {
-      network_name = networks$label[networks$id == input$network]
-    }
-    ts_title = paste('TV Forecast for', network_name)
-    y_label = paste(input$network, 'TV')
+    tv_obs = tv_dat[, c('day', tv_col)] %>%
+      subset(day < min(preds_n$forecast_for))
+    names(tv_obs)[2] = 'tv'
 
-    # preds_ts = as.xts(preds_n, order.by = forecast_for)
-    preds_n %>%
-      subset(select = c(forecast_for, tv_lower95, tv_mean, tv_upper95)) %>%
-      dygraph(main = ts_title, xlab = 'Day', ylab = 'TV') %>%
-      dySeries(c('tv_lower95', 'tv_mean', 'tv_upper95'), label = 'TV')
-    # ggplot(preds_n, aes(x = forecast_for, y = tv_mean)) +
-    #   geom_ribbon(aes(ymin = tv_lower95, ymax = tv_upper95), fill = "#66666666") +
-    #   geom_line() +
-    #   ylim(min(preds_n$tv_lower95, na.rm = T),
-    #        max(preds_n$tv_upper95, na.rm = T)) +
-    #   xlab('Date') + ylab('TV') +
-    #   ggtitle(ts_title)
+    # connect the forecast to the most recent observation
+    preds_n = tv_obs %>%
+      subset(day == max(day)) %>%
+      transform(forecast_for = day, tv_mean = tv, tv_lower95 = tv, tv_upper95 = tv) %>%
+      subset(select = -c(day, tv)) %>%
+      rbind(preds_n)
+    preds_n = preds_n[order(preds_n$forecast_for), ]
+
+    plot_ly(preds_n, x = ~forecast_for, y = ~tv_mean, type = 'scatter',
+            mode = 'lines', name = 'Forecast', line = list(dash = 'dash')) %>%
+      add_ribbons(ymin = ~tv_lower95, ymax = ~tv_upper95,
+                  name = '95% Prediction Interval', line = list(dash = 'solid')) %>%
+      add_trace(x = ~day, y = ~tv, data = tv_obs, name = 'Observation',
+                line = list(dash = 'solid')) %>%
+      layout(title = ts_title,
+             xaxis = list(title = 'Day'),
+             yaxis = list(title = 'TV'))
   })
   output$table_ts <- renderTable({
     preds_n = preds[preds$network == input$network, ]
