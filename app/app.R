@@ -121,18 +121,33 @@ server <- function(input, output) {
       subset(day == max(day)) %>%
       transform(forecast_for = day, tv_mean = tv, tv_lower95 = tv, tv_upper95 = tv) %>%
       subset(select = -c(day, tv)) %>%
-      rbind(preds_n)
+      rbind(preds_n) %>%
+      transform(tv_mean = round(tv_mean, 1),
+                tv_lower95 = round(tv_lower95, 1),
+                tv_upper95 = round(tv_upper95, 1)) %>%
+      transform(hover = paste0(tv_mean, ' (', tv_lower95, ' – ', tv_upper95, ')'))
     preds_n = preds_n[order(preds_n$forecast_for), ]
 
-    plot_ly(preds_n, x = ~forecast_for, y = ~tv_mean, type = 'scatter',
-            mode = 'lines', name = 'Forecast', line = list(dash = 'dash')) %>%
-      add_ribbons(ymin = ~tv_lower95, ymax = ~tv_upper95,
-                  name = '95% Prediction Interval', line = list(dash = 'solid')) %>%
-      add_trace(x = ~day, y = ~tv, data = tv_obs, name = 'Observation',
-                line = list(dash = 'solid')) %>%
+    unwanted_plotly_buttons = c('zoom', 'pan', 'select', 'zoomIn', 'zoomOut',
+                                'autoScale', 'resetScale', 'lasso2d',
+                                'hoverClosestCartesian', 'hoverCompareCartesian')
+    plot_ly(preds_n, x = ~forecast_for) %>%
+      add_ribbons(ymin = ~tv_lower95, ymax = ~tv_upper95, #hoverinfo = "none",
+                  name = '95% Prediction Interval', line = list(width = 0),
+                  opacity = 0.6) %>%
+      add_trace(y = ~tv_mean,
+                # hovertext = ~hover,
+                # text = ~hover, hovertemplate = "TV: %{text}",
+                type = 'scatter', mode = 'lines',
+                name = 'Forecast', line = list(color = '#1f77b4', dash = 'dash')) %>%
+      add_trace(x = ~day, y = ~tv, data = tv_obs, type = 'scatter',
+                mode = 'lines', name = 'Observation',
+                line = list(color = '#1f77b4', dash = 'solid')) %>%
       layout(title = ts_title,
              xaxis = list(title = 'Day'),
-             yaxis = list(title = 'TV'))
+             yaxis = list(title = 'TV')) %>%
+      config(modeBarButtonsToRemove = unwanted_plotly_buttons,
+             displaylogo = F)
   })
   output$table_ts <- renderTable({
     preds_n = preds[preds$network == input$network, ]

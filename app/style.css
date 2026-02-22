@@ -52,6 +52,10 @@ body {
 }
 /* .well { margin-top: 20px; } */
 
+#table_ts {
+    margin-top: 40px;
+}
+
 footer img {
     margin-bottom: 20px;
     margin-left: 20px;
