@@ -1,11 +1,16 @@
 
 library(shiny)
 library(magrittr)
-library(ggplot2)
 library(sf)
 library(plotly)
+library(leaflet)
+library(mapboxapi)
+
+mb_token = readLines('mapbox_key.txt')
 
 networks = readRDS('../results/maps/coned_networks_cleaned.rds') %>%
+  st_transform(4326) %>%
+  st_make_valid %>%
   transform(idnum = as.integer(sub('[A-Z]', '', id)),
             idlet = sub('[0-9]*', '', id)) %>%
   transform(label = paste0(id, ' (', Network, ')'))
@@ -27,10 +32,48 @@ date_note = paste('Forecasts made', cur_day)
 preds = read.csv(forecast_file) %>%
   transform(forecast_for = as.Date(forecast_for))
 
+# map color scale
+map_pal = colorNumeric('viridis', range(preds$tv_mean, na.rm = T))
+# following https://stackoverflow.com/a/56334156/5548959
+map_pal_rev = colorNumeric('viridis', range(-preds$tv_mean, na.rm = T), reverse = T)
+
+# source: https://github.com/rstudio/leaflet/issues/496#issuecomment-650122985
+setShapeStyle <- function(map, data = getMapData(map), layerId, stroke = NULL,
+                          color = NULL, weight = NULL, opacity = NULL,
+                          fill = NULL, fillColor = NULL, fillOpacity = NULL,
+                          dashArray = NULL, smoothFactor = NULL, noClip = NULL,
+                          options = NULL) {
+  options <- c(
+      list(layerId = layerId),
+      options,
+      filterNULL(
+          list(stroke = stroke, color = color, weight = weight,
+               opacity = opacity, fill = fill, fillColor = fillColor,
+               fillOpacity = fillOpacity, dashArray = dashArray,
+               smoothFactor = smoothFactor, noClip = noClip)
+      )
+  )
+  # evaluate all options
+  options <- evalFormula(options, data = data)
+  # make them the same length (by building a data.frame)
+  options <- do.call(data.frame, c(options, list(stringsAsFactors=FALSE)))
+  layerId <- options[[1]]
+  style <- options[-1] # drop layer column
+  leaflet::invokeMethod(map, data, "setStyle", "shape", layerId, style)
+}
+
+# based on https://github.com/rstudio/leaflet/issues/496#issuecomment-651625559
+setShapeLabel <- function(map, data = getMapData(map), layerId, label = NULL,
+                          options = labelOptions()) {
+  stopifnot(length(layerId) == length(label))
+  leaflet::invokeMethod(map, data, "setLabel", "shape", layerId, label, options)
+}
+
 ui = fluidPage(
     # tags$head(tags$title(page_title),
     #           tags$link(rel='shortcut icon', href='COE_16px.png')),
-    tags$head(tags$link(rel='shortcut icon', href='COE_16px.png')),
+    tags$head(tags$link(rel='shortcut icon', href='COE_16px.png'),
+              tags$script(src = 'app.js')),
     includeCSS('style.css'),
     div(
         titlePanel('NYC TV and Load forecasts | UAlbany Center of Excellence'),
@@ -57,9 +100,10 @@ ui = fluidPage(
     # ),
     fluidRow(
         column(6,
-               # h3('TV forecasts'),
-               # sliderInput('day', 'Map day', 0, 7, 0, step = 1, ticks = FALSE, animate = TRUE),
-               plotOutput('map', height = '1000px')
+               h3('TV forecasts'),
+               sliderInput('day', 'Map day', cur_day, cur_day + 7, cur_day,
+                           step = 1, ticks = FALSE, animate = TRUE),
+               leafletOutput('map', height = 600)
                ),
         column(6,
                h3('Network details'),
@@ -77,7 +121,7 @@ ui = fluidPage(
     #     column(6, plotOutput('map', height = '800px'))
     # ),
     # fluidRow(tableOutput('table_ts')),
-        # fluidRow(plotOutput('map', height = '800px'))
+    # fluidRow(plotOutput('map', height = '800px'))
     # sidebarLayout(
     #     sidebarPanel(
     #         p(date_note),
@@ -165,7 +209,8 @@ server <- function(input, output) {
       subset(select = -c(tv_sd, tv_lower95, tv_upper95))
     # print(names(out))
     # replace tiny percentages
-    for (thresh in paste0('ge', c(82, 84, 86))) {
+    # for (thresh in paste0('ge', c(82, 84, 86))) {
+    for (thresh in character()) {
       out[, thresh] = out[, thresh] %>%
         replace(out[, thresh] >= 1, round(out[, thresh])) %>%
         replace(out[, thresh] < 1, '<1')
@@ -175,34 +220,51 @@ server <- function(input, output) {
     out = out[, c(1:3, 7, 4:6)]
     out
   })
-  output$map <- renderPlot({
-    map_day = cur_day + as.integer(input$day)
-    map_title = paste('TV Forecasts for', map_day)
-    preds_n = preds[preds$days_ahead == input$day, ]
+  output$map = renderLeaflet({
+    leaflet(networks) %>%
+      addMapboxTiles(style_id = 'light-v11', username = 'mapbox',
+                     access_token = mb_token,
+                     options = tileOptions(tileSize = 512, zoomOffset = -1)) %>%
+      # addTiles(
+      #     urlTemplate = paste0(
+      #         "https://api.mapbox.com/styles/v1/mapbox/light-v11/tiles/{z}/{x}/{y}?access_token=",
+      #         mb_token
+      #     ),
+      #     options = tileOptions(
+      #         tileSize   = 512,
+      #         zoomOffset = -1
+      #     ),
+      #     attribution = '© Mapbox © OpenStreetMap'
+      # ) %>%
+      addPolygons(weight = 1, opacity = 1, color = 'gray',
+                  fillColor = '#A0A0A0', fillOpacity = 0.9,
+                  layerId = networks$id) %>%
+      # following https://stackoverflow.com/a/56334156/5548959
+      addLegend("bottomright", pal = map_pal_rev, values = -preds$tv_mean,
+                labFormat = labelFormat(transform = function(x) -x),
+                title = 'TV')
+  })
+  # Update the choropleth and date label without recreating the entire leaflet
+  # map
+  observe({
+    req(input$day)
+    map_day = input$day
+    map_title = paste('Forecast for', map_day)
+    title_div = div(map_title, style = 'color: #444444')
+
+    preds_n = preds[preds$forecast_for == input$day, ]
     networks_n = networks %>%
       transform(TV = preds_n$tv_mean[match(id, preds_n$network)])
-    # plot(networks_n[, 'forecast'], main = map_title)
-    # ggplot(data = networks_n) +
-    #   geom_sf(aes(fill = TV)) +
-    #   scale_fill_viridis_c() +
-    #   ggtitle(map_title) +
-    #   theme(panel.grid.major = element_blank(), axis.title.x = element_blank(),
-    #         axis.ticks.x = element_blank(), axis.text.x = element_blank(),
-    #         axis.title.y = element_blank(), axis.text.y = element_blank(),
-    #         axis.ticks.y = element_blank())
-    # for a multi-day version
-    networks_n = merge(networks, preds, by.x = 'id', by.y = 'network') %>%
-      transform(TV = tv_mean)
-    ggplot(data = networks_n) +
-      geom_sf(aes(fill = TV)) +
-      scale_fill_viridis_c() +
-      ggtitle('TV Forecasts') +
-      theme(panel.grid.major = element_blank(), axis.title.x = element_blank(),
-            axis.ticks.x = element_blank(), axis.text.x = element_blank(),
-            axis.title.y = element_blank(), axis.text.y = element_blank(),
-            axis.ticks.y = element_blank()) +
-      facet_wrap(~ forecast_for, nrow = 3)
-  }, res = 120)
+    network_labels = paste0('Network: ', networks_n$label,
+                            '<br>TV forecast: ',
+                            round(networks_n$TV, 1)) %>%
+      lapply(htmltools::HTML)
+    leafletProxy('map') %>%
+      removeControl('mapTitle') %>%
+      addControl(title_div, 'topleft', layerId = 'mapTitle') %>%
+      setShapeStyle(layerId = networks_n$id, fillColor = map_pal(networks_n$TV)) %>%
+      setShapeLabel(layerId = networks_n$id, label = network_labels)
+  })
 }
 
 shinyApp(ui = ui, server = server)

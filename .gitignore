@@ -240,3 +240,4 @@ pyvenv.cfg
 *.pdf
 *.rds
 *.bak
+app/mapbox_key.txt
