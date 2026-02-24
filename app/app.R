@@ -101,6 +101,7 @@ ui = fluidPage(
     fluidRow(
         column(6,
                h3('TV forecasts'),
+               p('Click the map to select a network.'),
                sliderInput('day', 'Map day', cur_day, cur_day + 7, cur_day,
                            step = 1, ticks = FALSE, animate = TRUE),
                leafletOutput('map', height = 600)
@@ -262,6 +263,18 @@ server <- function(input, output) {
       addControl(title_div, 'topleft', layerId = 'mapTitle') %>%
       setShapeStyle(layerId = networks_n$id, fillColor = map_pal(networks_n$TV)) %>%
       setShapeLabel(layerId = networks_n$id, label = network_labels)
+  })
+  # update the network selection when the map is clicked
+  observeEvent(input$map_shape_click, {
+    updateSelectInput(inputId = 'network', selected = input$map_shape_click$id)
+  })
+  # Highlight the selected network on the map
+  observe({
+    req(input$network)
+    leafletProxy('map') %>%
+      setShapeStyle(layerId = setdiff(networks$id, input$network),
+                    weight = 1, color = 'gray') %>%
+      setShapeStyle(layerId = input$network, weight = 3, color = 'white')
   })
 }
 
