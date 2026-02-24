@@ -70,34 +70,15 @@ setShapeLabel <- function(map, data = getMapData(map), layerId, label = NULL,
 }
 
 ui = fluidPage(
-    # tags$head(tags$title(page_title),
-    #           tags$link(rel='shortcut icon', href='COE_16px.png')),
     tags$head(tags$link(rel='shortcut icon', href='COE_16px.png'),
               tags$script(src = 'app.js')),
     includeCSS('style.css'),
     div(
         titlePanel('NYC TV and Load forecasts | UAlbany Center of Excellence'),
-        # h3(date_note),
         class = 'page-header'
     ),
     h3(date_note, style = 'font-style: italic;'),
     hr(),
-    # wellPanel(
-    #     selectInput('network', 'Network:', network_choices, width = 400),
-    #     selectInput('day', 'Map day', 0:7),
-    #     # uiOutput('categorySelect', inline = T),
-    #     # div(textOutput('updateTime'), actionLink('about', 'App documentation.'),
-    #     #     style = 'display: inline-block;'),
-    #     id = 'headerBar'
-    # ),
-    # fluidRow(
-    #     selectInput('network', 'Network:', network_choices, width = 400),
-    #     selectInput('day', 'Map day', 0:7),
-    #     # uiOutput('categorySelect', inline = T),
-    #     # div(textOutput('updateTime'), actionLink('about', 'App documentation.'),
-    #     #     style = 'display: inline-block;'),
-    #     id = 'headerBar'
-    # ),
     fluidRow(
         column(6,
                h3('TV forecasts'),
@@ -114,28 +95,6 @@ ui = fluidPage(
                style = 'border-left: #EEE solid 1px;'
                )
     ),
-    # fluidRow(
-    #     column(6,
-    #            plotOutput('plot_ts'),
-    #            tableOutput('table_ts')
-    #            ),
-    #     column(6, plotOutput('map', height = '800px'))
-    # ),
-    # fluidRow(tableOutput('table_ts')),
-    # fluidRow(plotOutput('map', height = '800px'))
-    # sidebarLayout(
-    #     sidebarPanel(
-    #         p(date_note),
-    #         # selectInput('network', 'Network', network_choices),
-    #         # selectInput('day', 'Map day', 0:7)
-    #         fluidRow(tableOutput('table_ts'))
-    #     ),
-    #     mainPanel(
-    #         fluidRow(plotOutput('plot_ts')),
-    #         fluidRow(tableOutput('table_ts')),
-    #         fluidRow(plotOutput('map', height = '800px'))
-    #     )
-    # ),
     hr(),
     includeHTML('footer.html')
 )
