@@ -207,10 +207,8 @@ server <- function(input, output) {
                 tv_upper95 = as.character(round(tv_upper95, 1))) %>%
       transform(tv_95int = paste0(tv_lower95, ' – ', tv_upper95)) %>%
       subset(select = -c(tv_sd, tv_lower95, tv_upper95))
-    # print(names(out))
     # replace tiny percentages
-    # for (thresh in paste0('ge', c(82, 84, 86))) {
-    for (thresh in character()) {
+    for (thresh in paste0('ge', c(82, 84, 86))) {
       out[, thresh] = out[, thresh] %>%
         replace(out[, thresh] >= 1, round(out[, thresh])) %>%
         replace(out[, thresh] < 1, '<1')
