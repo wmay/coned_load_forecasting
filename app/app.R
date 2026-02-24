@@ -28,7 +28,6 @@ forecast_file = list.files('../scripts/forecasts/', full.names = T) %>%
 cur_day = forecast_file %>%
   basename %>%
   as.Date(format = 'forecast_tv_%Y_%m%d.csv')
-date_note = paste('Forecasts made', cur_day)
 preds = read.csv(forecast_file) %>%
   transform(forecast_for = as.Date(forecast_for))
 
@@ -69,6 +68,11 @@ setShapeLabel <- function(map, data = getMapData(map), layerId, label = NULL,
   leaflet::invokeMethod(map, data, "setLabel", "shape", layerId, label, options)
 }
 
+date_note = paste('Forecasts made', cur_day)
+maintainence_msg = 'Note: Individual network forecasts may not be accurate during plant maintenance or if a network has been recently altered.'
+month_warning = 'Warning: Forecasts are only valid May through September.'
+cur_month = as.POSIXlt(cur_day)$mon + 1
+
 ui = fluidPage(
     tags$head(tags$link(rel='shortcut icon', href='COE_16px.png'),
               tags$script(src = 'app.js')),
@@ -77,7 +81,10 @@ ui = fluidPage(
         titlePanel('NYC TV and Load forecasts | UAlbany Center of Excellence'),
         class = 'page-header'
     ),
-    h3(date_note, style = 'font-style: italic;'),
+    h4(date_note),
+    if (cur_month < 5 || cur_month > 9)
+      p(month_warning, style = 'color: #E80202;'),
+    p(maintainence_msg),
     hr(),
     fluidRow(
         column(6,
