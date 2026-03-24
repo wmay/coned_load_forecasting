@@ -10,4 +10,5 @@ export CONDARC=/mnt/coe/Will/.condarc
 # conda info
 python3 scripts/get_nwp_data.py && \
     python3 scripts/process_nwp_data.py && \
-    Rscript scripts/forecast_tv.R
+    Rscript scripts/forecast_tv.R && \
+    Rscript scripts/forecast_load.R
