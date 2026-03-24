@@ -13,7 +13,14 @@ library(stars) # also requires ncmeta
 library(mlr3)
 source('R/mlr3_distr.R')
 
-out_dir = '/mnt/coe/web/coeweather/coned/forecasts'
+# set directories and settings based on where this is running
+if (nzchar(Sys.getenv('SUPERCRONIC'))) {
+  # running in supercronic container
+  out_dir = '/mnt/coe/web/coeweather/coned/forecasts'
+} else {
+  # running locally
+  out_dir = 'scripts/forecasts'
+}
 
 # see notes in `?benchmark` and `?mlr_tuners_random_search`
 lgr::get_logger("mlr3")$set_threshold("warn")
@@ -110,8 +117,14 @@ prepare_newdata_combined = function(network) {
 }
 
 get_predictions = function(network) {
+  # message('Making predictions for network ', network)
   task = prepare_newdata_combined(network)
-  pred = tv_models[[network]]$predict(task)
+  pred = try(tv_models[[network]]$predict(task))
+  if (inherits(pred, 'try-error')) {
+    warning('Predictions failed for network ', network)
+    return(data.frame(network = network, days_ahead = task$data()$days_ahead,
+                      tv_mean = NA, tv_sd = NA))
+  }
   # because we predicted the forecast error, now re-add the forecast
   pred_tv = pred$response + task$data()$TV
   data.frame(network = network, days_ahead = task$data()$days_ahead,
@@ -122,7 +135,8 @@ get_predictions = function(network) {
 tv_models = readRDS('results/forecast_tv/tv_models.rds')
 # this is a large file-- 10GB?
 
-cur_date = as.Date(attr(gefs_3day, 'dimensions')$time$values)
+# cur_date = as.Date(attr(gefs_3day, 'dimensions')$time$values)
+cur_date = as.Date(attr(gefs_3day, 'dimensions')$time$offset)
 out_file = format(cur_date, '%Y_%m%d') %>%
   paste0('forecast_tv_', ., '.csv') %>%
   file.path(out_dir, .)
