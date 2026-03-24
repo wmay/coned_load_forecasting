@@ -8,6 +8,18 @@ library(mapboxapi)
 
 mb_token = readLines('mapbox_key.txt')
 
+# forecast_path = '../scripts/forecasts/'
+forecast_path = '/mnt/coe/web/coeweather/coned/forecasts'
+
+# set directories and settings based on where this is running
+is_local = is.na(Sys.getenv('SHINY_SERVER_VERSION', NA))
+if (is_local) {
+  forecast_path = '../scripts/forecasts/'
+} else {
+  # running in shiny server container
+  forecast_path = '/mnt/coe/web/coeweather/coned/forecasts'
+}
+
 networks = readRDS('../results/maps/coned_networks_cleaned.rds') %>%
   st_transform(4326) %>%
   st_make_valid %>%
@@ -23,12 +35,17 @@ network_choices = c('System (official ConEd TV)' = 'system.orig',
 tv_dat = read.csv('../scripts/data/tv.csv') %>%
   transform(day = as.Date(day))
 
-forecast_file = list.files('../scripts/forecasts/', full.names = T) %>%
+forecast_file = list.files(forecast_path, full.names = T) %>%
   max
 cur_day = forecast_file %>%
   basename %>%
   as.Date(format = 'forecast_tv_%Y_%m%d.csv')
 preds = read.csv(forecast_file) %>%
+  transform(forecast_for = as.Date(forecast_for))
+load_preds = cur_day %>%
+  format('forecast_load_%Y_%m%d.csv') %>%
+  file.path(forecast_path, .) %>%
+  read.csv %>%
   transform(forecast_for = as.Date(forecast_for))
 
 # map color scale
@@ -110,6 +127,7 @@ server <- function(input, output) {
   output$plot_ts <- renderPlotly({
     preds_n = preds[preds$network == input$network, ] %>%
       subset(select = c(forecast_for, tv_mean, tv_lower95, tv_upper95))
+    load_preds_n = load_preds[load_preds$network == input$network, ]
     if (startsWith(input$network, 'system')) {
       if (input$network == 'system.orig') {
         network_name = 'System (official ConEd TV)'
@@ -139,10 +157,11 @@ server <- function(input, output) {
       transform(hover = paste0(tv_mean, ' (', tv_lower95, ' – ', tv_upper95, ')'))
     preds_n = preds_n[order(preds_n$forecast_for), ]
 
+    plot_bgcolor = '#E6E6E6'
     unwanted_plotly_buttons = c('zoom', 'pan', 'select', 'zoomIn', 'zoomOut',
                                 'autoScale', 'resetScale', 'lasso2d',
                                 'hoverClosestCartesian', 'hoverCompareCartesian')
-    plot_ly(preds_n, x = ~forecast_for) %>%
+    fig1 = plot_ly(preds_n, x = ~forecast_for) %>%
       add_ribbons(ymin = ~tv_lower95, ymax = ~tv_upper95, #hoverinfo = "none",
                   name = '95% Prediction Interval', line = list(width = 0),
                   opacity = 0.6) %>%
@@ -154,9 +173,32 @@ server <- function(input, output) {
       add_trace(x = ~day, y = ~tv, data = tv_obs, type = 'scatter',
                 mode = 'lines', name = 'Observation',
                 line = list(color = '#1f77b4', dash = 'solid')) %>%
-      layout(title = ts_title,
-             xaxis = list(title = 'Day'),
-             yaxis = list(title = 'TV')) %>%
+      layout(#title = ts_title,
+          xaxis = list(title = 'Day', gridcolor = 'white'),
+          yaxis = list(title = 'TV', gridcolor = 'white'),
+          plot_bgcolor = plot_bgcolor)
+
+    fig2 = plot_ly(load_preds_n, x = ~forecast_for) %>%
+      add_ribbons(ymin = ~load_lower95, ymax = ~load_upper95, #hoverinfo = "none",
+                  name = '95% Prediction Interval', line = list(width = 0),
+                  # need opacity in the fillcolor to match the default
+                  fillcolor = 'rgba(31, 119, 180, 0.5)',
+                  opacity = 0.6, showlegend = FALSE) %>%
+      add_trace(y = ~load,
+                # hovertext = ~hover,
+                # text = ~hover, hovertemplate = "TV: %{text}",
+                type = 'scatter', mode = 'lines',
+                name = 'Forecast', line = list(color = '#1f77b4', dash = 'dash'),
+                showlegend = FALSE) %>%
+      # add_trace(x = ~day, y = ~tv, data = tv_obs, type = 'scatter',
+      #           mode = 'lines', name = 'Observation',
+      #           line = list(color = '#1f77b4', dash = 'solid')) %>%
+      layout(xaxis = list(title = 'Day', gridcolor = 'white'),
+             yaxis = list(title = 'Peak Load (MW)', gridcolor = 'white'),
+             plot_bgcolor = plot_bgcolor)
+
+    subplot(fig1, fig2, nrows = 2, shareX = TRUE, titleY = TRUE) %>%
+      layout(title = list(text = 'TV and Load Forecasts')) %>%
       config(modeBarButtonsToRemove = unwanted_plotly_buttons,
              displaylogo = F)
   })
