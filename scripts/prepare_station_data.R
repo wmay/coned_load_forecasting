@@ -7,8 +7,17 @@ source('R/load_data.R')
 source('R/coned_tv.R')
 
 cur_date = Sys.Date()
-nysm_dir = '/run/user/1000/gvfs/sftp:host=swrcc/nysm/archive/nysm/netcdf/proc'
-nycm_dir = '/run/user/1000/gvfs/sftp:host=swrcc/nysm/archive/nyc/netcdf/proc'
+
+# set directories and settings based on where this is running
+if (nzchar(Sys.getenv('SUPERCRONIC'))) {
+  # running in supercronic container
+  nysm_dir = '/mnt/nysm/archive/nysm/netcdf/proc'
+  nycm_dir = '/mnt/nysm/archive/nyc/netcdf/proc'
+} else {
+  # running locally
+  nysm_dir = '/run/user/1000/gvfs/sftp:host=swrcc/nysm/archive/nysm/netcdf/proc'
+  nycm_dir = '/run/user/1000/gvfs/sftp:host=swrcc/nysm/archive/nyc/netcdf/proc'
+}
 
 get_nysm_nc_files = function(network = c('nysm', 'nycm'), cur_date) {
   data_dir = if (network == 'nysm') nysm_dir else nycm_dir
