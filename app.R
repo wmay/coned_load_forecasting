@@ -6,21 +6,18 @@ library(plotly)
 library(leaflet)
 library(mapboxapi)
 
-mb_token = readLines('mapbox_key.txt')
-
-# forecast_path = '../scripts/forecasts/'
-forecast_path = '/mnt/coe/web/coeweather/coned/forecasts'
+mb_token = readLines('app/mapbox_key.txt')
 
 # set directories and settings based on where this is running
 is_local = is.na(Sys.getenv('SHINY_SERVER_VERSION', NA))
 if (is_local) {
-  forecast_path = '../scripts/forecasts/'
+  forecast_path = 'scripts/forecasts/'
 } else {
   # running in shiny server container
   forecast_path = '/mnt/coe/web/coeweather/coned/forecasts'
 }
 
-networks = readRDS('../results/maps/coned_networks_cleaned.rds') %>%
+networks = readRDS('results/maps/coned_networks_cleaned.rds') %>%
   st_transform(4326) %>%
   st_make_valid %>%
   transform(idnum = as.integer(sub('[A-Z]', '', id)),
@@ -32,7 +29,7 @@ network_choices = c('System (official ConEd TV)' = 'system.orig',
                     'System (new UAlbany TV)' = 'system.new',
                     setNames(networks$id, networks$label))
 
-tv_dat = read.csv('../scripts/data/tv.csv') %>%
+tv_dat = read.csv('scripts/data/tv.csv') %>%
   transform(day = as.Date(day))
 
 forecast_file = list.files(forecast_path, full.names = T) %>%
@@ -93,7 +90,7 @@ cur_month = as.POSIXlt(cur_day)$mon + 1
 ui = fluidPage(
     tags$head(tags$link(rel='shortcut icon', href='COE_16px.png'),
               tags$script(src = 'app.js')),
-    includeCSS('style.css'),
+    includeCSS('app/style.css'),
     div(
         titlePanel('NYC TV and Load forecasts | UAlbany Center of Excellence'),
         class = 'page-header'
@@ -120,7 +117,7 @@ ui = fluidPage(
                )
     ),
     hr(),
-    includeHTML('footer.html')
+    includeHTML('app/footer.html')
 )
 
 server <- function(input, output) {
