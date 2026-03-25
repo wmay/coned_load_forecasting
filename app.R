@@ -12,9 +12,11 @@ mb_token = readLines('app/mapbox_key.txt')
 is_local = is.na(Sys.getenv('SHINY_SERVER_VERSION', NA))
 if (is_local) {
   forecast_path = 'scripts/forecasts/'
+  tv_path = 'scripts/data/tv.csv'
 } else {
   # running in shiny server container
   forecast_path = '/mnt/coe/web/coeweather/coned/forecasts'
+  tv_path = '/mnt/coe/Will/scheduled/coned_load_forecasting/scripts/data/tv.csv'
 }
 
 networks = readRDS('results/maps/coned_networks_cleaned.rds') %>%
