@@ -88,6 +88,7 @@ date_note = paste('Forecasts made', cur_day)
 maintainence_msg = 'Note: Individual network forecasts may not be accurate during plant maintenance or if a network has been recently altered.'
 month_warning = 'Warning: Forecasts are only valid May through September.'
 cur_month = as.POSIXlt(cur_day)$mon + 1
+table_discl = 'Note that individual ConEd networks may have different design criteria thresholds than the thresholds for the ConEd system as a whole (82, 84, 86).'
 
 ui = fluidPage(
     tags$head(tags$link(rel='shortcut icon', href='COE_16px.png'),
@@ -115,6 +116,7 @@ ui = fluidPage(
                selectInput('network', 'Network', network_choices, width = 400),
                plotlyOutput('plot_ts'),
                tableOutput('table_ts'),
+               p(table_discl),
                style = 'border-left: #EEE solid 1px;'
                )
     ),
