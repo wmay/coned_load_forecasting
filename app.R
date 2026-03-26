@@ -114,6 +114,7 @@ ui = fluidPage(
         column(6,
                h3('Network details'),
                selectInput('network', 'Network', network_choices, width = 400),
+               checkboxInput('showSystem', 'Overlay official ConEd TV'),
                plotlyOutput('plot_ts'),
                tableOutput('table_ts'),
                p(table_discl),
@@ -158,6 +159,26 @@ server <- function(input, output) {
       transform(hover = paste0(tv_mean, ' (', tv_lower95, ' – ', tv_upper95, ')'))
     preds_n = preds_n[order(preds_n$forecast_for), ]
 
+    if (input$showSystem) {
+      # data for system overlay
+      preds_n2 = preds[preds$network == 'system.orig', ] %>%
+        subset(select = c(forecast_for, tv_mean, tv_lower95, tv_upper95))
+      tv_obs2 = tv_dat[, c('day', 'system.orig')] %>%
+        subset(day < min(preds_n2$forecast_for))
+      names(tv_obs2)[2] = 'tv'
+      # connect the forecast to the most recent observation
+      preds_n2 = tv_obs2 %>%
+        subset(day == max(day)) %>%
+        transform(forecast_for = day, tv_mean = tv, tv_lower95 = tv, tv_upper95 = tv) %>%
+        subset(select = -c(day, tv)) %>%
+        rbind(preds_n2) %>%
+        transform(tv_mean = round(tv_mean, 1),
+                  tv_lower95 = round(tv_lower95, 1),
+                  tv_upper95 = round(tv_upper95, 1)) %>%
+        transform(hover = paste0(tv_mean, ' (', tv_lower95, ' – ', tv_upper95, ')'))
+      preds_n2 = preds_n2[order(preds_n2$forecast_for), ]
+    }
+
     # get weekends and holidays
     non_bus_days = subset(load_preds_n, weekend | holiday)
 
@@ -167,7 +188,8 @@ server <- function(input, output) {
                                 'hoverClosestCartesian', 'hoverCompareCartesian')
     fig1 = plot_ly(preds_n, x = ~forecast_for) %>%
       add_ribbons(ymin = ~tv_lower95, ymax = ~tv_upper95, #hoverinfo = "none",
-                  name = '95% Prediction Interval', line = list(width = 0),
+                  name = '95% Prediction Interval',
+                  line = list(width = 0, color = '#1f77b4'),
                   opacity = 0.6) %>%
       add_trace(y = ~tv_mean,
                 # hovertext = ~hover,
@@ -182,9 +204,29 @@ server <- function(input, output) {
           yaxis = list(title = 'TV', gridcolor = 'white'),
           plot_bgcolor = plot_bgcolor)
 
+    if (input$showSystem) {
+      # add system overlay
+      fig1 = fig1 %>%
+        add_ribbons(x = ~forecast_for, ymin = ~tv_lower95, ymax = ~tv_upper95,
+                    data = preds_n2,
+                    name = 'System 95% Prediction Interval',
+                    line = list(width = 0, color = '#ff7f0e'),
+                    fillcolor = 'rgba(255, 127, 14, 0.5)',
+                    opacity = 0.6) %>%
+        add_trace(x = ~forecast_for, y = ~tv_mean, data = preds_n2,
+                  # hovertext = ~hover,
+                  # text = ~hover, hovertemplate = "TV: %{text}",
+                  type = 'scatter', mode = 'lines',
+                  name = 'System Forecast', line = list(color = '#ff7f0e', dash = 'dash')) %>%
+        add_trace(x = ~day, y = ~tv, data = tv_obs2, type = 'scatter',
+                  mode = 'lines', name = 'System Observation',
+                  line = list(color = '#ff7f0e', dash = 'solid'))
+    }
+
     fig2 = plot_ly(load_preds_n, x = ~forecast_for) %>%
       add_ribbons(ymin = ~load_lower95, ymax = ~load_upper95, #hoverinfo = "none",
-                  name = '95% Prediction Interval', line = list(width = 0),
+                  name = '95% Prediction Interval',
+                  line = list(width = 0, color = '#1f77b4'),
                   # need opacity in the fillcolor to match the default
                   fillcolor = 'rgba(31, 119, 180, 0.5)',
                   opacity = 0.6, showlegend = FALSE) %>%
