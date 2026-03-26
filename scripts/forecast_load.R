@@ -1,18 +1,15 @@
 # Evaluate daily peak load forecasting methods
 
-# pkg_deps = c('ncmeta', 'scoringRules')
+# pkg_deps = c('ncmeta')
 # install.packages(pkg_deps)
-# remotes::install_github("mlr-org/mlr3temporal")
 # distr6_repos =  c(CRAN = 'https://cloud.r-project.org',
 #                   raphaels1 = 'https://raphaels1.r-universe.dev')
 # install.packages('distr6', repos = distr6_repos)
-# install.packages("mlr3proba", repos = "https://mlr-org.r-universe.dev")
-# library(timeDate) # holidays
+library(timeDate) # holidays
 library(magrittr)
 library(stars) # also requires ncmeta
 library(mlr3)
 library(torch)
-# source('R/mlr3_distr.R')
 
 # set directories and settings based on where this is running
 if (nzchar(Sys.getenv('SUPERCRONIC'))) {
@@ -167,13 +164,19 @@ out_file = format(cur_date, '%Y_%m%d') %>%
   paste0('forecast_load_', ., '.csv') %>%
   file.path(out_dir, .)
 
+forecast_dates = cur_date + fct_task$data()$days_ahead
+forecast_years = unique(as.POSIXlt(forecast_dates)$year + 1900)
+year_holidays = as.Date(holidayNYSE(forecast_years))
+
 out = data.frame(network = fct_task$data()$network,
                  forecast_for = cur_date + fct_task$data()$days_ahead,
                  days_ahead = fct_task$data()$days_ahead,
                  load = pred$response,
                  load_se = pred$se) %>%
   transform(load_lower95 = load - 1.96 * load_se,
-            load_upper95 = load + 1.96 * load_se) %>%
+            load_upper95 = load + 1.96 * load_se,
+            weekend = as.POSIXlt(forecast_for)$wday %in% c(0, 6),
+            holiday = forecast_for %in% year_holidays) %>%
   transform(load = round(load, 1), load_se = round(load_se, 1),
             load_lower95 = round(load_lower95, 1),
             load_upper95 = round(load_upper95, 1))

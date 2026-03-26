@@ -158,6 +158,9 @@ server <- function(input, output) {
       transform(hover = paste0(tv_mean, ' (', tv_lower95, ' – ', tv_upper95, ')'))
     preds_n = preds_n[order(preds_n$forecast_for), ]
 
+    # get weekends and holidays
+    non_bus_days = subset(load_preds_n, weekend | holiday)
+
     plot_bgcolor = '#E6E6E6'
     unwanted_plotly_buttons = c('zoom', 'pan', 'select', 'zoomIn', 'zoomOut',
                                 'autoScale', 'resetScale', 'lasso2d',
@@ -194,6 +197,10 @@ server <- function(input, output) {
       # add_trace(x = ~day, y = ~tv, data = tv_obs, type = 'scatter',
       #           mode = 'lines', name = 'Observation',
       #           line = list(color = '#1f77b4', dash = 'solid')) %>%
+      add_annotations(text = ~ifelse(weekend, 'weekend', 'holiday'),
+                      x = ~forecast_for, y = ~load,
+                      data = non_bus_days, font = list(size = 20),
+                      textangle = 270, showarrow = FALSE) %>%
       layout(xaxis = list(title = 'Day', gridcolor = 'white'),
              yaxis = list(title = 'Peak Load (MW)', gridcolor = 'white'),
              plot_bgcolor = plot_bgcolor)
