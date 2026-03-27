@@ -31,7 +31,7 @@ network_choices = c('System (official ConEd TV)' = 'system.orig',
                     'System (new UAlbany TV)' = 'system.new',
                     setNames(networks$id, networks$label))
 
-tv_dat = read.csv('scripts/data/tv.csv') %>%
+tv_dat = read.csv(tv_path) %>%
   transform(day = as.Date(day))
 
 forecast_file = list.files(forecast_path, full.names = T) %>%
