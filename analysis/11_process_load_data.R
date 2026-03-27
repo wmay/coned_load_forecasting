@@ -195,18 +195,23 @@ bus_days = isBizday(as.timeDate(peaks_wide$day), holidays = holidayNYSE(2021:202
 # # hunh
 
 # also need the system data
-sys1 = read.csv('data/coned/Network Data - SUNY 2025_05_01-2025_07_10.csv',
+sys1 = read.csv('data/coned/Borough and System Data 2020-2024.csv') %>%
+  subset(Borough == 'CECONY') %>%
+  subset(select = -Borough)
+sys2 = read.csv('data/coned/Networks_May_Sept2024.csv',
                 check.names = F) %>%
   subset(`Network Name` == 'CECONY System') %>%
   subset(select = -c(`Network Name`, Network, Borough))
-sys2 = read.csv('data/coned/Borough and System Data 2020-2024.csv') %>%
-  subset(Borough == 'CECONY') %>%
-  subset(select = -Borough)
-sys_peaks = rbind(sys1, sys2) %>%
+sys3 = read.csv('data/coned/Network Data - SUNY 2025_05_01-2025_07_10.csv',
+                check.names = F) %>%
+  subset(`Network Name` == 'CECONY System') %>%
+  subset(select = -c(`Network Name`, Network, Borough))
+sys_peaks = rbind(sys1, sys2, sys3) %>%
   transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M'),
             # some inconsistency, but various forms of 'False' mean data is fine
             BAD = !startsWith(BAD, 'F')) %>%
   subset(!is.na(DT) & !BAD) %>%
+  subset(!duplicated(DT)) %>%
   subset(as.POSIXlt(DT)$hour %in% 9:21) %>%
   # get daily load peaks
   transform(day = as.Date(DT, tz = 'EST5EDT')) %>%
