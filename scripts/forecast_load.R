@@ -153,10 +153,13 @@ prepare_load_task_all_networks = function(network_ids = networks$id) {
 
 
 network_model = readRDS('results/forecast_load/network_model.rds')
-# network_model$unmarshal()
+system_model = readRDS('results/forecast_load/system_model.rds')
+# network_model$unmarshal() # not needed?
 
 fct_task = prepare_load_task_all_networks()
 pred = network_model$predict(fct_task)
+sys_fct_task = prepare_load_task_combined('system')
+sys_pred = system_model$predict(sys_fct_task)
 
 cur_date = attr(gefs_3day, 'dimensions')$time$offset %>%
   as.Date
@@ -168,11 +171,19 @@ forecast_dates = cur_date + fct_task$data()$days_ahead
 forecast_years = unique(as.POSIXlt(forecast_dates)$year + 1900)
 year_holidays = as.Date(holidayNYSE(forecast_years))
 
-out = data.frame(network = fct_task$data()$network,
-                 forecast_for = cur_date + fct_task$data()$days_ahead,
-                 days_ahead = fct_task$data()$days_ahead,
-                 load = pred$response,
-                 load_se = pred$se) %>%
+net_out = data.frame(network = fct_task$data()$network,
+                     forecast_for = cur_date + fct_task$data()$days_ahead,
+                     days_ahead = fct_task$data()$days_ahead,
+                     load = pred$response,
+                     load_se = pred$se)
+
+sys_out = data.frame(network = 'system',
+                     forecast_for = cur_date + sys_fct_task$data()$days_ahead,
+                     days_ahead = sys_fct_task$data()$days_ahead,
+                     load = sys_pred$response,
+                     load_se = sys_pred$se)
+
+out = rbind(sys_out, net_out) %>%
   transform(load_lower95 = load - 1.96 * load_se,
             load_upper95 = load + 1.96 * load_se,
             weekend = as.POSIXlt(forecast_for)$wday %in% c(0, 6),

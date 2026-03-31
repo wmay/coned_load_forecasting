@@ -129,7 +129,6 @@ server <- function(input, output) {
   output$plot_ts <- renderPlotly({
     preds_n = preds[preds$network == input$network, ] %>%
       subset(select = c(forecast_for, tv_mean, tv_lower95, tv_upper95))
-    load_preds_n = load_preds[load_preds$network == input$network, ]
     if (startsWith(input$network, 'system')) {
       if (input$network == 'system.orig') {
         network_name = 'System (official ConEd TV)'
@@ -137,9 +136,19 @@ server <- function(input, output) {
         network_name = 'System (new UAlbany TV)'
       }
       tv_col = input$network
+      load_id = 'system'
+      load_gw = TRUE
     } else {
       network_name = networks$label[networks$id == input$network]
       tv_col = paste0('network.', input$network)
+      load_id = input$network
+      load_gw = FALSE
+    }
+    load_preds_n = load_preds[load_preds$network == load_id, ]
+    if (load_gw) {
+      for (var in c('load', 'load_lower95', 'load_upper95')) {
+        load_preds_n[, var] = load_preds_n[, var] / 1000
+      }
     }
     ts_title = paste('TV Forecast for', network_name)
     y_label = paste(input$network, 'TV')
@@ -223,6 +232,7 @@ server <- function(input, output) {
                   line = list(color = '#ff7f0e', dash = 'solid'))
     }
 
+    load_y = ifelse(load_gw, 'Peak Load (GW)', 'Peak Load (MW)')
     fig2 = plot_ly(load_preds_n, x = ~forecast_for) %>%
       add_ribbons(ymin = ~load_lower95, ymax = ~load_upper95, #hoverinfo = "none",
                   name = '95% Prediction Interval',
@@ -244,7 +254,7 @@ server <- function(input, output) {
                       data = non_bus_days, font = list(size = 20),
                       textangle = 270, showarrow = FALSE) %>%
       layout(xaxis = list(title = 'Day', gridcolor = 'white'),
-             yaxis = list(title = 'Peak Load (MW)', gridcolor = 'white'),
+             yaxis = list(title = load_y, gridcolor = 'white'),
              plot_bgcolor = plot_bgcolor)
 
     subplot(fig1, fig2, nrows = 2, shareX = TRUE, titleY = TRUE) %>%

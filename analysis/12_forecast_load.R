@@ -147,6 +147,49 @@ prepare_load_task_all_networks = function(network_ids = networks$id) {
   out_task
 }
 
+# Adding distributional regression, and fixing a bug-- see
+# https://github.com/mlr-org/mlr3pipelines/issues/989
+PipeOpTargetTrafoScaleRangeDistr = R6::R6Class("PipeOpTargetTrafoScaleRangeDistr",
+  inherit = PipeOpTargetTrafoScaleRange,
+  public = list(
+    initialize = function(id = "targettrafoscalerangedistr", param_vals = list()) {
+      super$initialize(id = id, param_vals = list())
+    }
+  ),
+  private = list(
+    .transform = function(task, phase) {
+      x = task$data(cols = task$target_names)
+      new_target = self$state$offset + x * self$state$scale
+      data.table::setnames(new_target, paste0(colnames(new_target), ".scaled"))
+      task$cbind(new_target)
+      # address the internal valid task
+      if (!is.null(task$internal_valid_task)) {
+        x = task$internal_valid_task$data(cols = task$internal_valid_task$target_names)
+        new_target = self$state$offset + x * self$state$scale
+        data.table::setnames(new_target, paste0(colnames(new_target), ".scaled"))
+        task$internal_valid_task$cbind(new_target)
+      }
+      convert_task(task, target = colnames(new_target), drop_original_target = TRUE, drop_levels = FALSE)
+    },
+    .invert = function(prediction, predict_phase_state) {
+      orig_means = unlist(prediction$distr$getParameterValue('mean'))
+      orig_sds = unlist(prediction$distr$getParameterValue('sd'))
+      offsets = self$state$offset
+      scales = self$state$scale
+      # new_means = (orig_means / scales) - offsets
+      new_means = (orig_means - offsets) / scales
+      new_sds = orig_sds / scales
+      # new_truth = (prediction$truth * scales) + offsets
+      # new_truth = (prediction$truth - offsets) / scales
+      distrs = data.frame(mean = new_means, sd = new_sds) %>%
+        distr6::VectorDistribution$new(distribution = "Normal",
+                                       params = .)
+      PredictionRegr$new(row_ids = prediction$row_ids,
+                         truth = predict_phase_state$truth, distr = distrs)
+    }
+  )
+)
+
 categ_scale_target = function(task, scale_params) {
   old_target = task$data(cols = task$target_names)
   network = task$data()$network
@@ -271,7 +314,7 @@ PipeOpTargetCategScale = R6::R6Class("PipeOpTargetCategScale",
     },
     .train_invert = function(task) {
       # return a predict_phase_state object (can be anything)
-      list(network = task$data()$network)
+      list(truth = task$truth(), network = task$data()$network)
     },
     .invert = function(prediction, predict_phase_state) {
       orig_means = unlist(prediction$distr$getParameterValue('mean'))
@@ -280,7 +323,7 @@ PipeOpTargetCategScale = R6::R6Class("PipeOpTargetCategScale",
       scales = self$state$scale_params[predict_phase_state$network, 'sd']
       new_means = (orig_means * scales) + offsets
       new_sds = orig_sds * scales
-      new_truth = (prediction$truth * scales) + offsets
+      new_truth = predict_phase_state$truth
       distrs = data.frame(mean = new_means, sd = new_sds) %>%
         distr6::VectorDistribution$new(distribution = "Normal",
                                        params = .)
@@ -497,10 +540,10 @@ ResamplingLoadForecastCV = R6::R6Class("ResamplingLoadForecastCV",
       test_ids = lapply(seq_along(train_ends), function(i) {
         ids[row_dates >= train_ends[i] & row_dates < test_ends[i]]
       })
-      # train_ids = list(ids[row_dates < '2024-08-01'],
-      #                  ids[row_dates < '2024-09-01'])
-      # test_ids = list(ids[row_dates >= '2024-08-01' & row_dates < '2024-09-01'],
-      #                 ids[row_dates >= '2024-09-01'])
+      # drop periods without sufficient data with a warning
+      # ...
+      stopifnot(all(lengths(train_ids) > 0))
+      stopifnot(all(lengths(test_ids) > 0))
       list(train = train_ids, test = test_ids)
     }
   )
@@ -608,3 +651,109 @@ gl$train(task_tune)
 gl$marshal()
 
 saveRDS(gl, 'results/forecast_load/network_model.rds')
+
+
+# OK now training the system model
+
+drn_vanilla = nn_module("drn_vanilla",
+  initialize = function(task, size_hidden) {
+    require(torch, quietly = TRUE)
+    n_features = task$n_features
+    self$first = nn_linear(n_features, size_hidden)
+    self$second = nn_linear(size_hidden, 2)
+  },
+  # argument x corresponds to the ingress token x
+  forward = function(x_num) {
+    x_num %>%
+      self$first() %>%
+      nnf_relu %>%
+      self$second()
+  }
+)
+
+drn_vanilla_params = ps(
+    size_hidden = p_int(lower = 1L, tags = "train")
+)
+learner_sys = LearnerTorchModuleDistr$new(
+    module_generator = drn_vanilla,
+    param_set = drn_vanilla_params,
+    task_type = 'regr',
+    ingress_tokens = list(x_num = ingress_num()),
+    optimizer = NULL,
+    loss = nn_normal_crps_loss,
+    # callbacks = t_clbks(c("history", "batchhistory")),
+    callbacks = t_clbks(c('batchhistory')),
+    predict_types = 'distr'
+)
+# data set is around 70 times smaller than the network dataset, therefore we
+# want something like 70x as many epochs
+learner_sys$param_set$set_values(
+  epochs = 200, batch_size = 1024, device = "cpu",
+  size_hidden = to_tune(8:64),
+  opt.lr = to_tune(.001, .05, TRUE),
+  opt.weight_decay = to_tune(.01, .5, TRUE)
+)
+tt_sys = learner_sys %>%
+  PipeOpLearner$new() %>%
+  ppl("targettrafo", trafo_pipeop = PipeOpTargetTrafoScaleRangeDistr$new(),
+      graph = .)
+gl_sys = po('scale') %>>% tt_sys %>%
+  as_learner
+set_validate(gl_sys, validate = 'test')
+
+task_tune_sys = prepare_load_task_combined('system')
+# task_tune_sys2 = task_tune_sys$clone()$select(c('TV', 'fct_run'))
+# plot(task_tune_sys$data()$TV, task_tune_sys$data()$load)
+
+# Get the best hyperparameters. For now, I'm skipping the formal benchmarking
+system.time({
+  tune_res_sys <- tune(
+      tuner = tnr("random_search", batch_size = n_workers),
+      task = task_tune_sys,
+      learner = gl_sys,
+      resampling = ResamplingLoadForecastCV$new(),
+      measure = msrs('regr.crps'),
+      # measure = msr("internal_valid_score",
+      #               select = "regr.mlplss.regr.logloss", minimize = TRUE),
+      term_evals = 12,
+      store_models = T
+  )
+})
+
+# train system model with the best hyperparameters
+
+learner_sys = LearnerTorchModuleDistr$new(
+    module_generator = drn_vanilla,
+    param_set = drn_vanilla_params,
+    task_type = 'regr',
+    ingress_tokens = list(x_num = ingress_num()),
+    optimizer = NULL,
+    loss = nn_normal_crps_loss,
+    # callbacks = t_clbks(c("history", "batchhistory")),
+    callbacks = t_clbks(c('batchhistory')),
+    predict_types = 'distr'
+)
+learner_sys$param_set$set_values(
+  epochs = 10, batch_size = 1024, device = "cpu",
+  size_hidden = tune_res_sys$result_learner_param_vals[[1]]$regr.module.size_hidden,
+  opt.lr = tune_res_sys$result_learner_param_vals[[1]]$regr.module.opt.lr,
+  opt.weight_decay = tune_res_sys$result_learner_param_vals[[1]]$regr.module.opt.weight_decay
+)
+tt_sys = learner_sys %>%
+  PipeOpLearner$new() %>%
+  ppl("targettrafo", trafo_pipeop = PipeOpTargetTrafoScaleRangeDistr$new(),
+      graph = .)
+gl_sys = po('scale') %>>% tt_sys %>%
+  as_learner
+
+# gl$param_set$values = tune_res$result_learner_param_vals
+# set_validate(gl, validate = NULL)
+
+set_validate(gl_sys, validate = .2)
+gl_sys$train(task_tune_sys)
+
+# save model -- see
+# https://mlr3torch.mlr-org.com/reference/mlr_learners_torch.html#saving-a-learner
+gl_sys$marshal()
+
+saveRDS(gl_sys, 'results/forecast_load/system_model.rds')
