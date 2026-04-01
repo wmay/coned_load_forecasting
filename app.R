@@ -122,6 +122,8 @@ ui = fluidPage(
                )
     ),
     hr(),
+    div(includeMarkdown('app/about.md'), class = 'about', style = 'max-width: 900px'),
+    hr(),
     includeHTML('app/footer.html')
 )
 
