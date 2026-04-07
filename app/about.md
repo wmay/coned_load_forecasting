@@ -18,11 +18,14 @@ which is derived only from Central Park and LaGuardia stations). We also created
 an optimized TV for the NYC system as a whole.
 
 These optimized TVs provide better measurements of local weather patterns,
-notably the sea breeze, which has the largest impact on the southeastern coast
-of the Long Island portion of NYC.
+notably the sea breeze, which has the largest impact on the southern coast of
+Long Island.
 
 A previous summary of the project is available at
 <https://nyswrcc.org/coeweather/coned/documents/ualbany_micronet_forecasting_2024.pdf>.
+
+A technical explanation of the forecast models is at
+<https://github.com/wmay/coned_load_forecasting/blob/main/models.md>.
 
 The forecast data files can be downloaded from
 <https://nyswrcc.org/coeweather/coned/forecasts>.
