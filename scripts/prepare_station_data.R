@@ -77,7 +77,13 @@ asos_obs = stations %>%
   subset(network == 'ASOS') %>%
   getElement('stid') %>%
   paste0('K', .) %>%
-  lapply(riem_measures, date_start = cur_date - 7) %>%
+  lapply(function(x) {
+    riem_measures(x, date_start = cur_date - 7)
+    # "Due to incessant requests against this service a 1 second per-IP throttle
+    # is now in place":
+    # https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?help
+    Sys.sleep(1)
+  }) %>%
   lapply(asos_raw_to_hourly) %>%
   do.call(rbind, .) %>%
   subset(as.POSIXlt(valid_hour)$hour %in% 7:21) %>%
