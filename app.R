@@ -34,23 +34,12 @@ network_choices = c('System (official ConEd TV)' = 'system.orig',
 tv_dat = read.csv(tv_path) %>%
   transform(day = as.Date(day))
 
-forecast_file = list.files(forecast_path, full.names = T) %>%
-  max
-cur_day = forecast_file %>%
-  basename %>%
-  as.Date(format = 'forecast_tv_%Y_%m%d.csv')
-preds = read.csv(forecast_file) %>%
-  transform(forecast_for = as.Date(forecast_for))
-load_preds = cur_day %>%
-  format('forecast_load_%Y_%m%d.csv') %>%
-  file.path(forecast_path, .) %>%
-  read.csv %>%
-  transform(forecast_for = as.Date(forecast_for))
-
-# map color scale
-map_pal = colorNumeric('viridis', range(preds$tv_mean, na.rm = T))
-# following https://stackoverflow.com/a/56334156/5548959
-map_pal_rev = colorNumeric('viridis', range(-preds$tv_mean, na.rm = T), reverse = T)
+most_recent_fct_date = function() {
+  list.files(forecast_path, 'forecast_load_.*\\.csv', full.names = T) %>%
+    max %>%
+    basename %>%
+    as.Date(format = 'forecast_load_%Y_%m%d.csv')
+}
 
 # source: https://github.com/rstudio/leaflet/issues/496#issuecomment-650122985
 setShapeStyle <- function(map, data = getMapData(map), layerId, stroke = NULL,
@@ -84,10 +73,7 @@ setShapeLabel <- function(map, data = getMapData(map), layerId, label = NULL,
   leaflet::invokeMethod(map, data, "setLabel", "shape", layerId, label, options)
 }
 
-date_note = paste('Forecasts made', cur_day)
 maintainence_msg = 'Note: Individual network forecasts may not be accurate during plant maintenance or if a network has been recently altered.'
-month_warning = 'Warning: Forecasts are only valid May through September.'
-cur_month = as.POSIXlt(cur_day)$mon + 1
 table_discl = 'Note that individual ConEd networks may have different design criteria thresholds than the thresholds for the ConEd system as a whole (82, 84, 86).'
 
 ui = fluidPage(
@@ -98,16 +84,15 @@ ui = fluidPage(
         titlePanel('NYC TV and Load forecasts | UAlbany Center of Excellence'),
         class = 'page-header'
     ),
-    h4(date_note),
-    if (cur_month < 5 || cur_month > 9)
-      p(month_warning, style = 'color: #E80202;'),
+    uiOutput('date_note'),
+    uiOutput('month_warning'),
     p(maintainence_msg),
     hr(),
     fluidRow(
         column(6,
                h3('TV forecasts'),
                p('Click the map to select a network.'),
-               sliderInput('day', 'Map day', cur_day, cur_day + 7, cur_day,
+               sliderInput('day', 'Map day', Sys.Date(), Sys.Date(), Sys.Date(),
                            step = 1, ticks = FALSE, animate = TRUE),
                leafletOutput('map', height = 600)
                ),
@@ -128,7 +113,58 @@ ui = fluidPage(
 )
 
 server <- function(input, output) {
+  cur_day = reactivePoll(
+      intervalMillis = 1000 * 60,
+      session = NULL,
+      checkFunc = most_recent_fct_date,
+      valueFunc = most_recent_fct_date
+  )
+  output$date_note = renderUI({
+    h4(paste('Forecasts made', cur_day()))
+  })
+  output$month_warning = renderUI({
+    cur_month = as.POSIXlt(cur_day())$mon + 1
+    if (cur_month < 5 || cur_month > 9)
+      p(month_warning, style = 'color: #E80202;')
+  })
+  output$network_input = renderUI({
+    cur_month = as.POSIXlt(cur_day())$mon + 1
+    if (cur_month < 5 || cur_month > 9)
+      p(month_warning, style = 'color: #E80202;')
+  })
+  observe({
+    # update the map slider with new data
+    min_date = cur_day()
+    max_date = cur_day() + 7
+    updateSliderInput(inputId = 'day', value = min_date, min = min_date,
+                      max = max_date)
+  })
+  tv_preds = reactive({
+    cur_day() %>%
+      format('forecast_tv_%Y_%m%d.csv') %>%
+      file.path(forecast_path, .) %>%
+      read.csv %>%
+      transform(forecast_for = as.Date(forecast_for))
+  })
+  load_preds = reactive({
+    cur_day() %>%
+      format('forecast_load_%Y_%m%d.csv') %>%
+      file.path(forecast_path, .) %>%
+      read.csv %>%
+      transform(forecast_for = as.Date(forecast_for))
+  })
+  map_pals = reactive({
+    preds = tv_preds()
+    # map color scale
+    map_pal = colorNumeric('viridis', range(preds$tv_mean, na.rm = T))
+    # following https://stackoverflow.com/a/56334156/5548959
+    map_pal_rev = colorNumeric('viridis', range(-preds$tv_mean, na.rm = T), reverse = T)
+    list(vir = map_pal, vir_r = map_pal_rev)
+  })
+
   output$plot_ts <- renderPlotly({
+    preds = tv_preds()
+    load_preds = load_preds()
     preds_n = preds[preds$network == input$network, ] %>%
       subset(select = c(forecast_for, tv_mean, tv_lower95, tv_upper95))
     if (startsWith(input$network, 'system')) {
@@ -265,6 +301,7 @@ server <- function(input, output) {
              displaylogo = F)
   })
   output$table_ts <- renderTable({
+    preds = tv_preds()
     preds_n = preds[preds$network == input$network, ]
     # ts_title = paste('TV Forecast for', input$network)
     # y_label = paste(input$network, 'TV')
@@ -309,7 +346,8 @@ server <- function(input, output) {
                   fillColor = '#A0A0A0', fillOpacity = 0.9,
                   layerId = networks$id) %>%
       # following https://stackoverflow.com/a/56334156/5548959
-      addLegend("bottomright", pal = map_pal_rev, values = -preds$tv_mean,
+      addLegend("bottomright", pal = map_pals()$vir_r,
+                values = -tv_preds()$tv_mean,
                 labFormat = labelFormat(transform = function(x) -x),
                 title = 'TV')
   })
@@ -321,6 +359,7 @@ server <- function(input, output) {
     map_title = paste('Forecast for', map_day)
     title_div = div(map_title, style = 'color: #444444')
 
+    preds = tv_preds()
     preds_n = preds[preds$forecast_for == input$day, ]
     networks_n = networks %>%
       transform(TV = preds_n$tv_mean[match(id, preds_n$network)])
@@ -328,6 +367,7 @@ server <- function(input, output) {
                             '<br>TV forecast: ',
                             round(networks_n$TV, 1)) %>%
       lapply(htmltools::HTML)
+    map_pal = map_pals()$vir
     leafletProxy('map') %>%
       removeControl('mapTitle') %>%
       addControl(title_div, 'topleft', layerId = 'mapTitle') %>%
