@@ -168,13 +168,18 @@ get_network_outliers = function(k = 3, cluster_k = 1.5, cluster_n = 5) {
 
 networks = readRDS('results/maps/coned_networks_cleaned.rds')
 
-peaks = list.files('data/coned', 'Network.*\\.csv', full.names = T) %>%
-  lapply(read.csv) %>%
-  do.call(rbind, .) %>%
+# network peaks
+peaks1 = list.files('data/coned', 'Network Data.*\\.csv', full.names = T) %>%
+  lapply(read.csv, na.strings = c('N/A', '#N/A')) %>%
+  do.call(rbind, .)
+peaks2 = read.csv('data/coned/2026_04 Network_System Hourly Data.csv',
+                  na.strings = c('N/A', '#N/A')) %>%
+  subset(Borough != 'CECONY', select = -IMPORTID)
+peaks = rbind(peaks1, peaks2) %>%
+  subset(Borough != 'Westchester') %>%
   transform(DT = replace(DT, DT == '', NA),
             # some inconsistency, but various forms of 'False' mean data is fine
-            BAD = !startsWith(BAD, 'F'),
-            Network = replace(Network, Network == '#N/A', NA)) %>%
+            BAD = !startsWith(BAD, 'F')) %>%
   transform(DT = as.POSIXct(DT, tz = 'EST5EDT',
                             tryFormats = c('%m/%d/%Y %H:%M:%S', '%m/%d/%Y %H:%M'))) %>%
   subset(!BAD & !is.na(DT) & !is.na(Network)) %>%
@@ -196,17 +201,20 @@ bus_days = isBizday(as.timeDate(peaks_wide$day), holidays = holidayNYSE(2021:202
 
 # also need the system data
 sys1 = read.csv('data/coned/Borough and System Data 2020-2024.csv') %>%
-  subset(Borough == 'CECONY') %>%
-  subset(select = -Borough)
-sys2 = read.csv('data/coned/Networks_May_Sept2024.csv',
-                check.names = F) %>%
+  subset(Borough == 'CECONY')
+sys2 = c('data/coned/Networks_May_Sept2024.csv',
+         'data/coned/Network Data - SUNY 2025_05_01-2025_07_10.csv',
+         'data/coned/Network Data - SUNY 2025_07_01-2025_09_30.csv') %>%
+  lapply(read.csv, check.names = F) %>%
+  do.call(rbind, .) %>%
   subset(`Network Name` == 'CECONY System') %>%
-  subset(select = -c(`Network Name`, Network, Borough))
-sys3 = read.csv('data/coned/Network Data - SUNY 2025_05_01-2025_07_10.csv',
+  subset(select = -c(`Network Name`, Network))
+sys3 = read.csv('data/coned/2026_04 Network_System Hourly Data.csv',
                 check.names = F) %>%
-  subset(`Network Name` == 'CECONY System') %>%
-  subset(select = -c(`Network Name`, Network, Borough))
+  subset(`Network Name` == 'System Load', select = -IMPORTID) %>%
+  subset(select = -c(`Network Name`, Network))
 sys_peaks = rbind(sys1, sys2, sys3) %>%
+  subset(select = -Borough) %>%
   transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M'),
             # some inconsistency, but various forms of 'False' mean data is fine
             BAD = !startsWith(BAD, 'F')) %>%
