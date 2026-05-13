@@ -8,8 +8,14 @@ source('R/coned_tv.R')
 get_combined_eff_tmp = function(stids) {
   tmp_cols = paste0('tmpf.', stids)
   dwp_cols = paste0('dwpf.', stids)
-  tmps = rowMeans(station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
-  dwps = rowMeans(station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
+  tv_station_obs = station_obs[, c(tmp_cols, dwp_cols), drop = FALSE]
+  for (x in c(tmp_cols, dwp_cols)) {
+    # ConEd uses the celsius numbers, which are derived in the ASOS system from
+    # the fahrenheit numbers
+    tv_station_obs[, x] = round(as_celsius(tv_station_obs[, x]), 1)
+  }
+  tmps = rowMeans(tv_station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
+  dwps = rowMeans(tv_station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
   out = coned_effective_temp(station_obs$time, tmps, dwps)
   row.names(out) = as.character(out$day)
   out
@@ -22,8 +28,14 @@ get_combined_eff_tmp = function(stids) {
 get_combined_tv = function(stids) {
   tmp_cols = paste0('tmpf.', stids)
   dwp_cols = paste0('dwpf.', stids)
-  tmps = rowMeans(station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
-  dwps = rowMeans(station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
+  tv_station_obs = station_obs[, c(tmp_cols, dwp_cols), drop = FALSE]
+  for (x in c(tmp_cols, dwp_cols)) {
+    # ConEd uses the celsius numbers, which are derived in the ASOS system from
+    # the fahrenheit numbers
+    tv_station_obs[, x] = round(as_celsius(tv_station_obs[, x]), 1)
+  }
+  tmps = rowMeans(tv_station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
+  dwps = rowMeans(tv_station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
   out = coned_tv(station_obs$time, tmps, dwps)
   row.names(out) = as.character(out$day)
   out
@@ -74,3 +86,30 @@ for (i in seq_along(all_sites)) {
 
 write.csv(out_tv, file = 'results/process_station_data/tv.csv', row.names = F)
 write.csv(out_eff_tmp, file = 'results/process_station_data/eff_tmp.csv', row.names = F)
+
+
+# compare with official TV values
+
+coned_tvs = read.csv('data/coned/2025_TV.csv') %>%
+  transform(Week = as.Date(Week, '%m/%d/%Y')) %>%
+  subset(select = -c(Min, Avg, Max)) %>%
+  reshape(direction = 'long', idvar = 'Week', timevar = 'dow', varying = 2:8,
+          v.names = 'tv') %>%
+  subset(!is.na(tv)) %>%
+  transform(day = Week + dow - 1) %>%
+  subset(select = c(day, tv))
+coned_tvs = coned_tvs[order(coned_tvs$day), ]
+
+both_tv = out_tv[, c('day', 'system.orig')] %>%
+  subset(day >= '2025-05-01' & day < '2026-01-01') %>%
+  transform(tv = coned_tvs$tv[match(day, coned_tvs$day)])
+
+with(both_tv, summary(system.orig - tv))
+
+png('results/process_station_data/tv_comparison.png')
+both_tv %>%
+  transform(discrepancy = round(system.orig - tv, 1)) %>%
+  getElement('discrepancy') %>%
+  table %>%
+  barplot(main = "Will's TV minus ConEd TV (2025)", ylab = 'Count', xlab = '°F')
+dev.off()

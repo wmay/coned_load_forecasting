@@ -25,17 +25,15 @@ rolling_mean3 = function(time, val, units = c('hours', 'days'),
 # `nextafter` in C/Python
 coned_round = function(x, digits = 0) round(x + sqrt(.Machine$double.eps), digits)
 
-# Get wet bulb temperature from temperature (`DB`) and dewpoint (`DP`). Pressure
-# is assumed to be 1013.25. DB and DP must be in Fahrenheit
-coned_wet_bulb = function(DB, DP) {
+# Get wet bulb temperature from temperature (`DBC`) and dewpoint (`DPC`). Pressure
+# is assumed to be 1013.25. Inputs must be in Celsius
+coned_wet_bulb = function(DBC, DPC) {
   # I'm vaguely curious about where ConEd got this calculation, but not going to
   # look it up for now
   PR = 1013.25
-  DBC = as_celsius(DB)
-  DPC = as_celsius(DP)
   DDEPC = (DBC - DPC) * 0.18
   WBC = DBC - (0.035 * DDEPC - 0.00072 * DDEPC * (DDEPC - 1)) * (DBC + DPC + 95.556 - (PR / 30.474))
-  as_fahrenheit(WBC)
+  WBC
 }
 
 # Calculate ConEd's "effective temperature": Effective temperature = (ET)
@@ -45,6 +43,9 @@ coned_effective_temp = function(t, temp, dwp) {
   data.frame(time = t, temp = temp, dwp = dwp) %>%
     subset(!is.na(temp) & !is.na(dwp)) %>%
     transform(wetbulb = coned_wet_bulb(temp, dwp)) %>%
+    # really unfortunate rounding step here
+    transform(temp = coned_round(as_fahrenheit(temp)),
+              wetbulb = coned_round(as_fahrenheit(wetbulb))) %>%
     transform(drywet = (temp + wetbulb) / 2) %>%
     transform(ave_3hr = rolling_mean3(time, drywet, 'hours')) %>%
     # remove night/morning
@@ -55,7 +56,7 @@ coned_effective_temp = function(t, temp, dwp) {
     aggregate(eff_temp ~ day, ., max, na.rm = T)
 }
 
-# ConEd's "temperature variable". `temp` and `dwp` must be in Fahrenheit
+# ConEd's "temperature variable". `temp` and `dwp` must be in Celsius
 coned_tv = function(t, temp, dwp) {
   coned_effective_temp(t, temp, dwp) %>%
     transform(tv = rolling_mean3(day, eff_temp, 'days', c(.7, .2, .1))) %>%
