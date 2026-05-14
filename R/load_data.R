@@ -92,16 +92,16 @@ read_asos_file = function(f) {
 
 # get the fahrenheit measurements closest to the hour
 asos_raw_to_hourly = function(dat) {
-  dat = subset(dat, !is.na(tmpf)) %>%
-    transform(valid_hour = as.POSIXct(round(valid, 'hours')),
+  subset(dat, !is.na(tmpf)) %>%
+    # asos collects the data ~10 minutes before the hour so there's time to
+    # transmit it
+    transform(valid_hour = as.POSIXct(trunc(valid, 'hours')) +
+                as.difftime(1, units = 'hours'),
               minute = as.POSIXlt(valid)$min) %>%
+    subset(minute > 46) %>%
     # careful here-- this time zone change only works when `valid_hour` is
     # already POSIXct
-    transform(valid_hour = as.POSIXct(valid_hour, tz = 'EST5EDT')) %>%
-    # minutes from nearest hour
-    transform(from_hour = ifelse(minute > 30, 60 - minute, minute))
-  dat[with(dat, order(valid_hour, from_hour)), ] %>%
-    subset(!duplicated(valid_hour), select = -c(minute, from_hour))
+    transform(valid_hour = as.POSIXct(valid_hour, tz = 'EST5EDT'))
 }
 
 get_hourly_asos_data = function(edt_hours = NULL) {

@@ -90,26 +90,28 @@ write.csv(out_eff_tmp, file = 'results/process_station_data/eff_tmp.csv', row.na
 
 # compare with official TV values
 
-coned_tvs = read.csv('data/coned/2025_TV.csv') %>%
-  transform(Week = as.Date(Week, '%m/%d/%Y')) %>%
-  subset(select = -c(Min, Avg, Max)) %>%
-  reshape(direction = 'long', idvar = 'Week', timevar = 'dow', varying = 2:8,
-          v.names = 'tv') %>%
-  subset(!is.na(tv)) %>%
-  transform(day = Week + dow - 1) %>%
-  subset(select = c(day, tv))
-coned_tvs = coned_tvs[order(coned_tvs$day), ]
+# coned_tvs = read.csv('data/coned/2025_TV.csv') %>%
+#   transform(Week = as.Date(Week, '%m/%d/%Y')) %>%
+#   subset(select = -c(Min, Avg, Max)) %>%
+#   reshape(direction = 'long', idvar = 'Week', timevar = 'dow', varying = 2:8,
+#           v.names = 'tv') %>%
+#   subset(!is.na(tv)) %>%
+#   transform(day = Week + dow - 1) %>%
+#   subset(select = c(day, tv))
+# coned_tvs = coned_tvs[order(coned_tvs$day), ]
 
-both_tv = out_tv[, c('day', 'system.orig')] %>%
-  subset(day >= '2025-05-01' & day < '2026-01-01') %>%
-  transform(tv = coned_tvs$tv[match(day, coned_tvs$day)])
+# both_tv = out_tv[, c('day', 'system.orig')] %>%
+#   subset(day >= '2025-05-01' & day < '2025-08-01') %>%
+#   transform(tv = coned_tvs$tv[match(day, coned_tvs$day)])
 
-with(both_tv, summary(system.orig - tv))
+# with(both_tv, summary(system.orig - tv))
 
-png('results/process_station_data/tv_comparison.png')
-both_tv %>%
-  transform(discrepancy = round(system.orig - tv, 1)) %>%
-  getElement('discrepancy') %>%
-  table %>%
-  barplot(main = "Will's TV minus ConEd TV (2025)", ylab = 'Count', xlab = '°F')
-dev.off()
+# with(both_tv, table(system.orig - tv))
+
+# png('results/process_station_data/tv_comparison.png')
+# both_tv %>%
+#   transform(discrepancy = round(system.orig - tv, 1)) %>%
+#   getElement('discrepancy') %>%
+#   table %>%
+#   barplot(main = "Will's TV minus ConEd TV (2025)", ylab = 'Count', xlab = '°F')
+# dev.off()

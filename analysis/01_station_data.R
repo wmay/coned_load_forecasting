@@ -56,14 +56,15 @@ plot(st_geometry(rbind(close_ny, close_nj)), pch = 19, add = T)
 local_asos_stations = paste0('K', c(close_ny$id, close_nj$id))
 
 download_asos_data = function(id) {
-  for (year in 2021:2024) {
+  for (year in 2021:2026) {
     out = file.path('data/asos', paste0(year, '_', id, '.csv'))
     # no need to re-download
     if (file.exists(out)) next()
     # start at April to get a head start on the load curve estimates
     start_str = paste0(year, '-04-01')
     end_str = paste0(year, '-10-01')
-    obs = riem_measures(id, start_str, date_end = end_str)
+    obs = riem_measures(id, start_str, date_end = end_str,
+                        report_type = 'routine')
     write.csv(obs, file = out, row.names = F)
   }
 }
