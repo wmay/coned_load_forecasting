@@ -317,9 +317,7 @@ server <- function(input, output) {
       subset(select = -c(tv_sd, tv_lower95, tv_upper95))
     # replace tiny percentages
     for (thresh in paste0('ge', c(82, 84, 86))) {
-      out[, thresh] = out[, thresh] %>%
-        replace(out[, thresh] >= 1, round(out[, thresh])) %>%
-        replace(out[, thresh] < 1, '<1')
+      out[, thresh] = ifelse(out[, thresh] >= 1, round(out[, thresh]), '<1')
     }
     names(out) = c('Forecast for', 'Days ahead', 'TV', '>82 (%)', '>84 (%)',
                    '>86 (%)', '95% interval')
