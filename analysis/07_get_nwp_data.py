@@ -2,7 +2,7 @@
 '''
 
 import os, glob, dask
-os.chdir('..')
+# os.chdir('..')
 # https://docs.xarray.dev/en/stable/user-guide/dask.html#reading-and-writing-data
 os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
 import numpy as np
@@ -96,7 +96,7 @@ def make_collection_args(DATES, fxx, model, products, search):
 # speed this up immensely with the help of a cluster running kubernetes
 cluster = k8s_download_cluster('wmay-download',
                                '/rdma/hulk/coe/Will/coned_nwp',
-                               n_workers=100, threads_per_worker=6,
+                               n_workers=50, threads_per_worker=6,
                                port_forward_cluster_ip=True)
 client = Client(cluster)
 
@@ -146,7 +146,9 @@ gefs_params = gefs_params.loc[~pd.isnull(gefs_params['search']), :]
 gefs_searches = gefs_params['search'].unique()
 # April through Sept., starting 2021
 year_runs = [ pd.date_range(start=f"{y}-04-01 00:00", periods=183 * 4,
-                            freq='6h').to_series() for y in range(2021, 2025) ]
+                            freq='6h').to_series() for y in range(2021, 2026) ] +\
+            [ pd.date_range(start=f"{y}-04-01 00:00", periods=31 * 4,
+                            freq='6h').to_series() for y in range(2026, 2027) ]
 all_runs = pd.concat(year_runs).index
 runs_06utc = all_runs[np.arange(len(all_runs)) % 4 == 1]
 runs_not_06utc = all_runs[np.arange(len(all_runs)) % 4 != 1]
@@ -269,7 +271,7 @@ env = {'HDF5_USE_FILE_LOCKING': 'FALSE',
        # files
        'EXTRA_PIP_PACKAGES': 'eccodes==2.38 typing_extensions netCDF4 git+https://github.com/ASRCsoft/nwpdownload'}
 
-spec = make_cluster_spec(name='wmay-dask', n_workers=12,
+spec = make_cluster_spec(name='wmay-dask', n_workers=5,
                          resources=worker_resources, env=env)
 scheduler = spec['spec']['scheduler']['spec']['containers'][0]
 worker = spec['spec']['worker']['spec']['containers'][0]
@@ -283,8 +285,8 @@ worker['volumeMounts'] = [mount]
 cluster = KubeCluster(custom_cluster_spec=spec, port_forward_cluster_ip=True)
 # cluster = KubeCluster(name='wmay-dask', n_workers=10, env=env,
 #                       port_forward_cluster_ip=True)
-cluster.dashboard_link
-cluster.wait_for_workers(12)
+print(cluster.dashboard_link)
+cluster.wait_for_workers(5)
 
 client = Client(cluster)
 
@@ -316,26 +318,55 @@ comp = { 'zlib': True, 'complevel': 4 }
 
 from nwpdownload.xarray import merge_nwp_variables
 
-# write each collection to a netcdf file
+# write each collection to a netcdf file, one month at a time
+c_months = np.unique(gefs_collections[0].DATES.values.astype('datetime64[M]'))
+for m in c_months:
+    out_dir = '/mnt/nwpdownload/netcdf/' + str(m)
+    delayed_mkdir = dask.delayed(os.makedirs)(out_dir, exist_ok=True)
+    delayed_mkdir.compute()
+    for c in gefs_collections:
+        out_path = out_dir + '/' + get_file_name(c)
+        print(f'writing to {out_path}')
+        # remove other months
+        if not 'DATES_orig' in c.__dict__.keys():
+            c.DATES_orig = c.DATES.copy()
+        c.DATES = c.DATES_orig[c.DATES_orig.values.astype('datetime64[M]') == m]
+        ds_list = c.open_datasets()
+        ds_c = merge_nwp_variables(ds_list)
+        encoding = { var: comp for var in ds_c.data_vars }
+        # When using the dask cluster, there seem to be contradictory
+        # expectations about where the netcdf is written. The only way this
+        # works is to wrap the whole function in `delayed`, so that every part
+        # of it runs on the remote cluster
+        delayed_c = dask.delayed(ds_c.to_netcdf)(out_path, encoding=encoding)
+        delayed_c.compute()
+
+
+# combine the monthly files
+cluster.scale(1)
+
+def combine_nc(c):
+    '''Combine monthly netcdf files.
+    '''
+    nc_file = get_file_name(c)
+    out_path = '/mnt/nwpdownload/' + nc_file
+    nc_glob = '/mnt/nwpdownload/netcdf/*/' + nc_file
+    ds_orig = xr.open_mfdataset(nc_glob)
+    encoding = { var: comp for var in ds_orig.data_vars }
+    ds_orig.to_netcdf(out_path, encoding=encoding)
+
+# remove an unwanted directory
+# import shutil
+# delayed_c = dask.delayed(shutil.rmtree)('/mnt/nwpdownload/netcdf/2026-05')
+# delayed_c.compute()
+# delayed_c = dask.delayed(os.remove)('/mnt/nwpdownload/gefs_atmos0p25_fct.nc.new')
+# delayed_c.compute()
+
 for c in gefs_collections:
     out_path = '/mnt/nwpdownload/' + get_file_name(c)
-    print(f'writing to {out_path}')
-    ds_list = c.open_datasets()
-    ds_c = merge_nwp_variables(ds_list)
-    encoding = { var: comp for var in ds_c.data_vars }
-    # When using the dask cluster, there seem to be contradictory expectations
-    # about where the netcdf is written. The only way this works is to wrap the
-    # whole function in `delayed`, so that every part of it runs on the remote
-    # cluster
-    delayed_c = dask.delayed(ds_c.to_netcdf)(out_path, encoding=encoding)
+    print(f'writing {out_path}')
+    delayed_c = dask.delayed(combine_nc)(c)
     delayed_c.compute()
-
-# # neat, let's try writing a netcdf file
-# ds1.to_netcdf('results/process_nwp_data/gefs_tv.nc')
-    
-# ds_test = xr.open_dataset('results/get_nwp_data/gefs_atmos0p5_fct.nc')
-# ds_test['u10'].mean()
-# ds_test.close()
 
 client.close()
 cluster.close()
