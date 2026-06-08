@@ -170,10 +170,12 @@ networks = readRDS('results/maps/coned_networks_cleaned.rds')
 
 # network peaks
 peaks1 = list.files('data/coned', 'Network Data.*\\.csv', full.names = T) %>%
-  lapply(read.csv, na.strings = c('N/A', '#N/A')) %>%
-  do.call(rbind, .)
+  c('data/coned/Networks_May_Sept2024.csv') %>%
+  lapply(read.csv, check.names = F, na.strings = c('N/A', '#N/A')) %>%
+  do.call(rbind, .) %>%
+  subset(`Network Name` != 'CECONY System')
 peaks2 = read.csv('data/coned/2026_04 Network_System Hourly Data.csv',
-                  na.strings = c('N/A', '#N/A')) %>%
+                  check.names = F, na.strings = c('N/A', '#N/A')) %>%
   subset(Borough != 'CECONY', select = -IMPORTID)
 peaks = rbind(peaks1, peaks2) %>%
   subset(Borough != 'Westchester') %>%
@@ -191,7 +193,7 @@ names(peaks) = tolower(names(peaks))
 peaks_wide = reshape(peaks, direction = 'wide', idvar = 'day',
                      timevar = 'network')
 
-bus_days = isBizday(as.timeDate(peaks_wide$day), holidays = holidayNYSE(2021:2025))
+bus_days = isBizday(as.timeDate(peaks_wide$day), holidays = holidayNYSE(2021:2026))
 
 # # is there an extra network?
 # peak_ids = sub('reading.', '', names(peaks_wide)[-1], fixed = T)
