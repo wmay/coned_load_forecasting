@@ -294,16 +294,34 @@ saveRDS(bres3, 'results/forecast_tv/benchmarks.rds')
 
 bres3$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
 
-# get the loss by lead time
-bres3$obs_loss() %>%
-  transform(days_ahead = benchmark_tasks[[1]]$data(rows = row_ids)$days_ahead,
-            abs_err = abs(response - truth)) %>%
-  aggregate(abs_err ~ days_ahead, FUN = mean, data = .)
-
 # does one stand out as best?
 bres3$aggregate(msr('regr.crps')) %>%
   aggregate(regr.crps ~ learner_id, FUN = mean, data = .)
 # very very close
+
+bres3_summ = bres3$aggregate() %>%
+  transform(network = sub('.*_', '', task_id))
+drf_samples = bres3_summ %>%
+  subset(learner_id == 'regr.drf.tuned') %>%
+  getElement('nr')
+# summarize drf benchmarking results for plotting
+tv_losses = bres3$obs_loss(msr('regr.mae')) %>%
+  subset(resample_result %in% drf_samples, select = -distr) %>%
+  # have to calculate crps manually for now
+  transform(regr.crps = scoringRules::crps_norm(truth, response, se)) %>%
+  # get the loss by lead time
+  transform(days_ahead = benchmark_tasks[[1]]$data(rows = row_ids)$days_ahead) %>%
+  by(.[, c('days_ahead', 'resample_result')], function(x) {
+    network = bres3_summ$network[bres3_summ$nr == x$resample_result[1]]
+    data.frame(days_ahead = x$days_ahead[1],
+               network = network,
+               regr.mae = mean(x$regr.mae),
+               regr.crps = mean(x$regr.crps))
+  }) %>%
+  as.list %>%
+  do.call(rbind, .)
+write.csv(tv_losses, file = 'results/forecast_tv/tv_losses.csv',
+          row.names = F)
 
 # bres3$aggregate(msr('regr.crps')) %>%
 #   subset(learner_id != 'regr.ngr') %>%
