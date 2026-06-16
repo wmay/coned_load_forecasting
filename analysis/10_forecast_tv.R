@@ -35,7 +35,8 @@ lgr::get_logger("mlr3")$set_threshold("warn")
 lgr::get_logger("bbotk")$set_threshold("warn")
 
 all_eff_tmps = read.csv('results/process_station_data/eff_tmp.csv')
-all_tvs = read.csv('results/process_station_data/tv.csv')
+all_tvs = read.csv('results/process_station_data/tv.csv') %>%
+  transform(day = as.Date(day))
 
 # if coordinates are not in the same order for every variable, `read_mdim` works
 # fine while `read_ncdf` messes up the coordinates
@@ -116,6 +117,8 @@ fill_incomplete_tv = function(tv, day, network, days_ahead) {
   } else if (days_ahead == 0) {
     tv + .2 * system_eff_tmp$eff_temp[match(day - 1, system_eff_tmp$day)] +
       .1 * system_eff_tmp$eff_temp[match(day - 2, system_eff_tmp$day)]
+  } else {
+    tv
   }
 }
 
@@ -368,180 +371,137 @@ names(tv_models) = names(all_tvs)[-1] %>%
 saveRDS(tv_models, 'results/forecast_tv/tv_models.rds')
 
 
-# slightly different for GEFS benchmarking
+# GEFS benchmarking
 
-# get a matrix of GEFS TV forecasts
-get_gefs_samples = function(nc, lon = 3, lat = 4, days_ahead = 2) {
-  # When read by `read_mdim` time values are read as dates despite having a time
-  # as well. However the numeric date will have a fractional component!
-  dates = attr(nc, 'dimensions')$time$values + days_ahead
+# as long as we're using cross validation above for the ML benchmarking, we
+# don't have to worry about matching the resampling for the NWP benchmarking.
+# It's equivalent to testing the accuracy over the full dataset
+
+# Get GEFS forecasts for the given day+network+lead time, as distr6. If no
+# forecast is available, returns a forecast of -1 (because NA breaks things)
+get_gefs_fcts = function(nc, network, days_ahead, valid_date) {
+  nc_network = if (startsWith(network, 'system')) 'system' else network
+  net_ind = which(attr(nc, 'dimensions')$network$values == nc_network)
+  nc_valid_dates = as.Date(attr(nc, 'dimensions')$time$values) + days_ahead
+  day_ind = which(nc_valid_dates == valid_date)
   # days ahead starts at 0 in the array
-  # if (days_ahead < 2) stop('TV only available starting day 2')
-  tv = t(nc[['TV']][lon, lat,, days_ahead + 1, ])
-  # For days_ahead < 2, need to add observed (past) portion of TV to the
-  # forecast portion. TV_sd is correct though, since observations have 0 sd
-  if (days_ahead == 1) {
-    tv = tv +
-      .1 * system_tv$tv[match(dates - 2, system_tv$day)]
+  tvs = nc[['TV']][net_ind,, days_ahead + 1, day_ind]
+  if (days_ahead < 2) {
+    # add observed (past) portion of TV to the forecast portion
+    tvs = fill_incomplete_tv(tvs, valid_date, network, days_ahead)
   }
-  if (days_ahead == 0) {
-    tv = tv +
-      .2 * system_tv$tv[match(dates - 1, system_tv$day)] +
-      .1 * system_tv$tv[match(dates - 2, system_tv$day)]
+  if (all(is.na(tvs))) {
+    warning('all GEFS members are missing: network ', network, ', valid_date ',
+            valid_date, ', days_ahead ', days_ahead)
+    return(distr6::Empirical$new(samples = -1))
   }
-  list(day = dates, tv = tv)
+  if (any(is.na(tvs))) warning('some GEFS members are missing')
+  # why are there some missing values?
+  # convert to distr6 for mlr3
+  distr6::Empirical$new(samples = na.omit(tvs))
 }
 
-make_gefs_tasks = function() {
-  sapply(0:7, function(ahead) {
-    id = paste0('Forecast TV ', ahead)
-    gefs = get_gefs_samples(gefs_tv3, days_ahead = ahead)
-    # make sure days are exactly the same as the prediction tasks
-    # compare_days = prepare_multiday_dataset(ahead)$day
-    compare_days = get_valid_day(gefs_tv, ahead)
-    x = gefs$tv
-    missing_row = apply(x, 1, function(x) all(is.na(x)))
-    y = system_tv[match(gefs$day, system_tv$day), 'tv', drop = FALSE]
-    cbind(as.data.frame(x), y) %>%
-      subset(!missing_row) %>%
+# GEFS model, takes day+network+lead time as predictors, returns the GEFS
+# forecasts
+LearnerRegrGEFS = R6::R6Class(
+  "LearnerRegrGEFS",
+  inherit = LearnerRegr,
+  public = list(
+    initialize = function() {
+      self$state$model = TRUE # no training required
+      super$initialize(
+        id = "regr.ident",
+        feature_types = c("Date", "character", "numeric"),
+        predict_types = 'distr',
+        packages = c('magrittr', 'distr6'),
+        properties = c("weights", "missings"),
+        label = "GEFS"
+      )
+    }
+  ),
+  private = list(
+      .predict = function(task) {
+        distrs = task$data(cols = task$feature_names) %>%
+          split(1:nrow(.)) %>%
+          lapply(function(x) {
+            get_gefs_fcts(gefs_tv_members, x$network, x$days_ahead, x$day)
+          }) %>%
+          distr6::VectorDistribution$new(distlist = .)
+        list(distr = distrs)
+      }
+  )
+)
+
+# make a task where the predictors are day+network+leadtime, and the outcomes
+# are observations
+make_gefs_network_task = function(network) {
+  subtasks = sapply(0:7, function(ahead) {
+    id = paste('Forecast TV', network, ahead)
+    # gefs = get_gefs_fcts(gefs_tv_members, network, ahead)
+    if (startsWith(network, 'system')) {
+      tv_col = network
+    } else {
+      tv_col = paste0('network.', network)
+    }
+    valid_dates = all_tvs$day
+    obs_tv = all_tvs[, tv_col]
+    data.frame(day = valid_dates, network = network, days_ahead = ahead,
+               tv = obs_tv) %>%
       subset(!is.na(tv)) %>%
       as_task_regr('tv', id = id)
   })
-}
-gefs_tasks = make_gefs_tasks()
-
-gefs_tester = LearnerRegrIdent$new()
-gefs_tester$predict_type = 'distr'
-gefs_tester$id = 'GEFS'
-bgrid = benchmark_grid(
-    tasks = gefs_tasks,
-    learners = gefs_tester,
-    resamplings = rsmp('forecast_holdout')
-)
-bres_gefs = benchmark(bgrid)
-bres_gefs$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
-
-
-all_res = rbind(
-    bres2$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse'))),
-    bres_gefs$aggregate(c(msr('regr.crps'), msr('regr.mae'), msr('regr.rmse')))
-)
-saveRDS(all_res, 'results/forecast_tv/benchmarks.rds')
-
-all_res %>%
-  subset(select = c(task_id, learner_id, regr.crps)) %>%
-  reshape(direction = 'wide', idvar = 'task_id', timevar = 'learner_id')
-
-
-# rfgls = LearnerRegrRangerDist$new()
-
-# bgrid = benchmark_grid(
-#     tasks = forecast_tv_tasks[5:6],
-#     learners = rfgls,
-#     resamplings = rsmp('forecast_holdout')
-# )
-# bres2 = benchmark(bgrid)
-
-# rfgls$train(forecast_tv_tasks[[1]])
-
-
-# # train the model
-# qrf$train(forecast_tv, split$train_set)
-# prediction = qrf$predict(forecast_tv, split$test_set)
-
-library(ggplot2)
-# library(tidyr)
-
-gefs_baseline = all_res %>%
-  subset(learner_id == 'GEFS') %>%
-  transform(days_ahead = as.integer(substr(task_id, 13, 13))) %>%
-  with(setNames(regr.crps, days_ahead))
-
-all_res %>%
-  transform(days_ahead = as.integer(substr(task_id, 13, 13))) %>%
-  ggplot(aes(x = days_ahead, y = regr.crps, color = learner_id)) +
-  geom_line()
-
-all_res %>%
-  transform(days_ahead = as.integer(substr(task_id, 13, 13))) %>%
-  transform(crps = regr.crps / (gefs_baseline[as.character(days_ahead)])) %>%
-  ggplot(aes(x = days_ahead, y = crps, color = learner_id)) +
-  geom_line()
-
-comparison_plot = function(metrics, nwp_acc) {
-  nwp_acc_long = nwp_acc %>%
-    transform(days_ahead = day, model = 'GEFS') %>%
-    subset(select = -day) %>%
-    gather('metric', 'value', -c(model, days_ahead))
-  names(metrics) = sub('regr\\.', '', names(metrics))
-  names(metrics)[2:3] = toupper(names(metrics)[2:3])
-  metrics_long = metrics %>%
-    transform(model = 'Random forest') %>%
-    gather('metric', 'value', -c(model, days_ahead))
-
-  rbind(nwp_acc_long, metrics_long) %>%
-    ggplot(aes(x = days_ahead, y = value, color = model)) + geom_line() + facet_wrap( ~ metric)
+  # combine lead times
+  task = subtasks[[1]]
+  task$cbind(data = data.frame(days_ahead = rep(0, task$nrow)))
+  # append the other lead times
+  for (i in 1:7) {
+    task_i = subtasks[[i + 1]]
+    task_i$cbind(data = data.frame(days_ahead = rep(i, task_i$nrow)))
+    task$rbind(data = task_i$data())
+  }
+  task$id = paste('TV', network, sep = '_')
+  task
 }
 
-comparison_plot(rf_all_results$metrics, nwp_acc)
 
+# benchmarking approach: testing the random networks from before, plus the
+# system TV
 
+gefs_benchmark_tasks = rand_networks %>%
+  c('system.orig', 'system.new') %>%
+  lapply(make_gefs_network_task)
 
+gefs_model = LearnerRegrGEFS$new()
 
-# library(ggplot2)
-# library(tidyr)
+gefs_preds = lapply(gefs_benchmark_tasks, function(x) gefs_model$predict(x))
 
-# comparison_plot = function(metrics, nwp_acc) {
-#   nwp_acc_long = nwp_acc %>%
-#     transform(days_ahead = day, model = 'GEFS') %>%
-#     subset(select = -day) %>%
-#     gather('metric', 'value', -c(model, days_ahead))
-#   names(metrics) = sub('regr\\.', '', names(metrics))
-#   names(metrics)[2:3] = toupper(names(metrics)[2:3])
-#   metrics_long = metrics %>%
-#     transform(model = 'Random forest') %>%
-#     gather('metric', 'value', -c(model, days_ahead))
+# summarize GEFS benchmarking results for plotting
+extract_gefs_losses = function(pred, task) {
+  pred$obs_loss(msr('regr.mae')) %>%
+    # have to calculate crps manually for now
+    transform(regr.crps = mapply(function(x, y) {
+      samples = x$getParameterValue('data')$samples
+      scoringRules::crps_sample(y, samples)
+    }, distr[[1]]$wrappedModels(), truth)) %>%
+    subset(select = -distr) %>%
+    # remove NA values, marked by -1 forecast value
+    subset(response > 0) %>%
+    # get the loss by lead time
+    transform(days_ahead = task$data(rows = row_ids)$days_ahead,
+              network = task$data(rows = row_ids)$network) %>%
+    as.data.frame %>%
+    by(.[c('days_ahead', 'network')], function(x) {
+      data.frame(days_ahead = x$days_ahead[1],
+                 network = x$network[1],
+                 regr.mae = mean(x$regr.mae),
+                 regr.crps = mean(x$regr.crps))
+    }) %>%
+    as.list %>%
+    do.call(rbind, .)
+}
 
-#   rbind(nwp_acc_long, metrics_long) %>%
-#     ggplot(aes(x = days_ahead, y = value, color = model)) + geom_line() + facet_wrap( ~ metric)
-# }
-
-# comparison_plot(rf_all_results$metrics, nwp_acc)
-
-
-# # let's try out torch and sequence-to-vector RNN
-# library(mlr3torch)
-# library(torch)
-
-# # create an RNN model using the regr.torch_model class
-
-# seq2vec_rnn = nn_module(
-#     "seq2vec_rnn",
-#     initialize = function(input_size, hidden_size, output_size, num_layers = 1) {
-#       self$rnn = nn_rnn(input_size, hidden_size, num_layers)
-#       self$fc = nn_linear(hidden_size, output_size)
-#     },
-#     forward = function(x) {
-#       out = self$rnn(x)
-#       self$fc(out[ , -1, ]) # only predict for the last RNN values
-#     }
-# )
-
-# # will need a TorchIngressToken
-# ingress_token = TorchIngressToken(
-#     features = features,
-#     batchgetter = function(x) {
-#       # convert a data frame to a matrix for the RNN
-      
-#     },
-#     shape = c(NA, 2)
-# )
-
-# learner = lrn(
-#     "regr.torch_model",
-#     network = seq2vec_rnn,
-#     ingress_tokens = ingress_tokens,
-#     batch_size = 16,
-#     epochs = 1,
-#     device = "cpu"
-# )
+gefs_losses = mapply(extract_gefs_losses, gefs_preds, gefs_benchmark_tasks,
+                     SIMPLIFY = FALSE) %>%
+  do.call(rbind, .)
+write.csv(gefs_losses, file = 'results/forecast_tv/gefs_losses.csv',
+          row.names = F)
