@@ -140,36 +140,30 @@ LearnerRegrDrf = R6::R6Class(
       args = list(X = task$data(cols = task$feature_names),
                   Y = task$data(cols = task$target_names))
       args = c(args, pv)
-      tryCatch({
-        do.call(drf::drf, args)
-      }, error = function(e) {
-        print('Error message:')
-        print(as.character(e))
-        warning(as.character(e))
-      })
+      do.call(drf::drf, args)
     },
     .predict = function(task) {
       pv = self$param_set$get_values(tags = "predict")
       newdata = task$data(cols = task$feature_names)
       n_pred = nrow(newdata)
-      if (inherits(self$model, 'character')) {
-        # print('Model is an error message:')
-        # print(self$model)
-        train_params = self$param_set$get_values(tags = "train")
-        param_txt = paste(capture.output(print(train_params)), collapse=' ')
-        warning_txt = paste0('Model is an error message. Parameters: ', param_txt)
-        warning(warning_txt)
-        # for now just return bad predictions
-        params = data.frame(mean = rep(0, nrow(newdata)),
-                            sd = sqrt(.Machine$double.xmax))
-        distrs = distr6::VectorDistribution$new(distribution = "Normal",
-                                                params = params)
-        return(list(distr = distrs))
-      }
       means = predict(self$model, newdata = newdata, functional = 'mean')
       sds = predict(self$model, newdata = newdata, functional = 'sd')
-      # need to wrap in a `VectorDistribution` (see `LearnerRegr`)
       params = data.frame(mean = means, sd = sds)
+      # Deal with bad predictions. They will cause problems in distr6
+      if (any(!is.finite(as.matrix(params)))) {
+        warning('Non-finite predictions')
+        bad_rows = which(rowSums(!is.finite(as.matrix(params))) > 0)
+        print(params[bad_rows, ])
+        # hard cleaning step
+        params$mean[is.na(params$mean)] = 0
+        params$mean[!is.finite(params$mean)] = sqrt(.Machine$double.xmax)
+        # ^ how often does this happen?
+        # clamp SD safely, to avoid the error below--
+        # In sqrt(functional.mean2 - (functional.mean)^2) : NaNs produced
+        params$sd[!is.finite(params$sd)] = 1e-8
+        # params$sd = pmax(params$sd, 1e-8, na.rm = TRUE) # this doesn't seem necessary?
+      }
+      # need to wrap in a `VectorDistribution` (see `LearnerRegr`)
       distrs = distr6::VectorDistribution$new(distribution = "Normal",
                                               params = params)
       list(distr = distrs)
@@ -227,6 +221,12 @@ MeasureRegrCRPS = R6::R6Class(
     )
 )
 mlr_measures$add("regr.crps", function() MeasureRegrCRPS$new())
+
+# for `obs_loss` -- it would be nice to do this, but it may not be possible
+# .crps = function(truth, response, ...) {
+#   # ...
+# }
+# mlr3measures:::add_measure(.crps, "CRPS (per observation)", "regr", -Inf, Inf, TRUE, aggregated = FALSE)
 
 # # quick test
 # p$score(msr("regr.crps"))
