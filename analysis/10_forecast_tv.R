@@ -220,13 +220,17 @@ drf$param_set$set_values(num.trees = to_tune(1, 2000),
                          honesty.prune.leaves = to_tune(),
                          ci.group.size = 1,
                          num.threads = 1)
+# DRF sometimes fails during training, so it needs a fallback to make
+# autotuning/benchmarking run reliably
+drf$encapsulate('try', fallback = lrn("regr.featureless_distr"))
 drf_at = auto_tuner(
     tuner = tnr("random_search"),
     learner = drf, 
     resampling = rsmp('block_cv', folds = 5),
     measure = msr('regr.crps'),
-    term_evals = 10
+    term_evals = 5
 )
+
 # system.time(drf_at$train(forecast_tv_tasks[[6]]))
 
 # rfgls = LearnerRegrRfgls$new()
@@ -269,8 +273,9 @@ if (on_slurm) {
   # ))
 } else {
   # for testing locally
+  n_workers = parallel::detectCores() - 1
   # plan(list(batchtools_local, multicore), workers = 4)
-  plan(list('sequential', 'multicore'), workers = 4)
+  plan(list('sequential', 'multicore'), workers = n_workers)
 }
 
 # First step-- model selection
@@ -504,4 +509,47 @@ gefs_losses = mapply(extract_gefs_losses, gefs_preds, gefs_benchmark_tasks,
                      SIMPLIFY = FALSE) %>%
   do.call(rbind, .)
 write.csv(gefs_losses, file = 'results/forecast_tv/gefs_losses.csv',
+          row.names = F)
+
+
+# add DRF benchmarking for comparison with GEFS
+benchmark_tasks = c('system.orig', 'system.new') %>%
+  lapply(prepare_tv_task_combined, predict_error = TRUE)
+
+bgrid = benchmark_grid(
+    tasks = benchmark_tasks,
+    learners = drf_at,
+    resamplings = rsmp('block_cv', folds = 5)
+)
+
+system.time(bres4 <- benchmark(bgrid))
+
+bres4_summ = bres4$aggregate() %>%
+  transform(network = sub('.*_', '', task_id))
+get_drf_bench_ahead = function(nr, row_ids) {
+  n = length(nr)
+  out = rep(integer(), times = n)
+  for (i in 1:2) {
+    ind_i = nr == i
+    row_ids_i = row_ids[ind_i]
+    out[ind_i] = benchmark_tasks[[i]]$data(rows = row_ids_i)$days_ahead
+  }
+  out
+}
+# summarize drf benchmarking results for plotting
+drf_losses = bres4$obs_loss(msr('regr.mae')) %>%
+  # have to calculate crps manually for now
+  transform(regr.crps = scoringRules::crps_norm(truth, response, se)) %>%
+  # get the loss by lead time
+  transform(days_ahead = get_drf_bench_ahead(resample_result, row_ids)) %>%
+  by(.[, c('days_ahead', 'resample_result')], function(x) {
+    network = bres4_summ$network[bres4_summ$nr == x$resample_result[1]]
+    data.frame(days_ahead = x$days_ahead[1],
+               network = network,
+               regr.mae = mean(x$regr.mae),
+               regr.crps = mean(x$regr.crps))
+  }) %>%
+  as.list %>%
+  do.call(rbind, .)
+write.csv(drf_losses, file = 'results/forecast_tv/drf_losses.csv',
           row.names = F)

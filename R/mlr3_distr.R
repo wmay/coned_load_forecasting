@@ -129,46 +129,87 @@ LearnerRegrDrf = R6::R6Class(
       if ("weights" %in% task$properties) {
         pv$sample.weights = task$weights$weight
       }
-      # mlr3misc::invoke(
-      #     drf::drf,
-      #     X = task$data(cols = task$feature_names),
-      #     Y = task$data(cols = task$target_names),
-      #     .args = pv
-      #     )
-      # drf::drf(X = task$data(cols = task$feature_names),
-      #          Y = task$data(cols = task$target_names))
-      args = list(X = task$data(cols = task$feature_names),
-                  Y = task$data(cols = task$target_names))
-      args = c(args, pv)
-      do.call(drf::drf, args)
+      mlr3misc::invoke(
+          drf::drf,
+          X = task$data(cols = task$feature_names),
+          Y = task$data(cols = task$target_names),
+          .args = pv
+      )
     },
     .predict = function(task) {
       pv = self$param_set$get_values(tags = "predict")
       newdata = task$data(cols = task$feature_names)
-      n_pred = nrow(newdata)
       means = predict(self$model, newdata = newdata, functional = 'mean')
       sds = predict(self$model, newdata = newdata, functional = 'sd')
       params = data.frame(mean = means, sd = sds)
       # Deal with bad predictions. They will cause problems in distr6
       if (any(!is.finite(as.matrix(params)))) {
-        warning('Non-finite predictions')
+        warning('Non-finite or NA predictions')
         bad_rows = which(rowSums(!is.finite(as.matrix(params))) > 0)
         print(params[bad_rows, ])
         # hard cleaning step
         params$mean[is.na(params$mean)] = 0
         params$mean[!is.finite(params$mean)] = sqrt(.Machine$double.xmax)
         # ^ how often does this happen?
-        # clamp SD safely, to avoid the error below--
-        # In sqrt(functional.mean2 - (functional.mean)^2) : NaNs produced
         params$sd[!is.finite(params$sd)] = 1e-8
-        # params$sd = pmax(params$sd, 1e-8, na.rm = TRUE) # this doesn't seem necessary?
       }
+      if (any(params$sd < 0)) {
+        warning("Negative SD's")
+        bad_rows = which(params$sd < 0)
+        print(params[bad_rows, ])
+      }
+      # avoid numerical issues with tiny or negative SD's
+      params$sd = pmax(params$sd, 1e-8, na.rm = TRUE)
       # need to wrap in a `VectorDistribution` (see `LearnerRegr`)
       distrs = distr6::VectorDistribution$new(distribution = "Normal",
                                               params = params)
       list(distr = distrs)
     }
   )
+)
+
+# Featureless distributional regression. For use as a fallback model (when DRF
+# training fails, for example). Courtesy of chatgpt
+LearnerRegrFeaturelessDistr = R6::R6Class(
+  "LearnerRegrFeaturelessDistr",
+  inherit = LearnerRegr,
+  public = list(
+    initialize = function() {
+      super$initialize(
+        id = "regr.featureless_distr",
+        feature_types = c("logical", "integer", "numeric", "factor", "ordered"),
+        predict_types = "distr",
+        properties = c("weights", "missings"),
+        packages = "distr6",
+        label = "Featureless Distributional Regression"
+      )
+    }
+  ),
+  private = list(
+    .train = function(task) {
+      y = task$truth()
+      list(
+        mean = mean(y, na.rm = TRUE),
+        sd = max(stats::sd(y, na.rm = TRUE), 1e-8)
+      )
+    },
+    .predict = function(task) {
+      n = task$nrow
+      params = data.frame(
+        mean = rep(self$model$mean, n),
+        sd   = rep(self$model$sd, n)
+      )
+      distrs = distr6::VectorDistribution$new(
+        distribution = "Normal",
+        params = params
+      )
+      list(distr = distrs)
+    }
+  )
+)
+mlr_learners$add(
+  "regr.featureless_distr",
+  LearnerRegrFeaturelessDistr
 )
 
 # average performance of multiple quantiles
