@@ -11,7 +11,7 @@ dependencies:
   - wgrib2
   - pip # this is redundant but conda complains if it isn't there
   - pip:
-    - nwpdownload[k8s]@git+https://github.com/ASRCsoft/nwpdownload
+    - nwpdownload[k8s]@git+https://github.com/ASRCsoft/nwpdownload@a84aeda
     - eccodes>=2.42
     - flox
     - ipython

@@ -241,3 +241,6 @@ pyvenv.cfg
 *.rds
 *.bak
 app/mapbox_key.txt
+# pixi environments
+.pixi/*
+!.pixi/config.toml

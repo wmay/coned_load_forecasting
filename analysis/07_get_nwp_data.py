@@ -269,7 +269,7 @@ env = {'HDF5_USE_FILE_LOCKING': 'FALSE',
        'DASK_SCHEDULER_ADDRESS': scheduler_address,
        # have to use eccodes <2.39 due to an issue reading the regional subset
        # files
-       'EXTRA_PIP_PACKAGES': 'eccodes==2.38 typing_extensions netCDF4 git+https://github.com/ASRCsoft/nwpdownload'}
+       'EXTRA_PIP_PACKAGES': 'eccodes==2.38 typing_extensions netCDF4 git+https://github.com/ASRCsoft/nwpdownload@a84aeda'}
 
 spec = make_cluster_spec(name='wmay-dask', n_workers=5,
                          resources=worker_resources, env=env)

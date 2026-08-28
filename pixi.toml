@@ -1,0 +1,25 @@
+[workspace]
+authors = ["William May <wmay@hey.com>"]
+channels = ["conda-forge"]
+name = "nwpdownload-env"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+python = "3.10.12.*"
+lz4 = "4.3.3.*"
+numpy = "2.2.5.*"
+toolz = "0.12.0.*"
+dask = "2025.5.0.*"
+distributed = "2025.5.0.*"
+wgrib2 = "*"
+pip = "*"
+
+[pypi-dependencies]
+nwpdownload = { git = "https://github.com/ASRCsoft/nwpdownload", rev = "a84aeda", extras = ["k8s"] }
+eccodes = ">=2.42"
+flox = "*"
+ipython = "*"
+netcdf4 = "*"
