@@ -60,6 +60,8 @@ get_robust_residuals = function(load, nload, year) {
   # missing year levels
   data_years = unique(year[!is.na(load) & !is.na(nload)])
   year[!year %in% data_years] = data_years[1]
+  # ^these values won't be used anyway, only changing to keep the correct set of
+  # years
   if (length(data_years) == 1) {
     f = load ~ nload
   } else {
@@ -174,9 +176,12 @@ peaks1 = list.files('data/coned', 'Network Data.*\\.csv', full.names = T) %>%
   lapply(read.csv, check.names = F, na.strings = c('N/A', '#N/A')) %>%
   do.call(rbind, .) %>%
   subset(`Network Name` != 'CECONY System')
-peaks2 = read.csv('data/coned/2026_04 Network_System Hourly Data.csv',
-                  check.names = F, na.strings = c('N/A', '#N/A')) %>%
-  subset(Borough != 'CECONY', select = -IMPORTID)
+peaks2 = list.files('data/coned', '.*Network_System Hourly Data\\.csv',
+                    full.names = T) %>%
+  lapply(read.csv, check.names = F, na.strings = c('N/A', '#N/A')) %>%
+  do.call(rbind, .) %>%
+  subset(Borough != 'CECONY', select = -IMPORTID) %>%
+  transform(READING = as.numeric(READING))
 peaks = rbind(peaks1, peaks2) %>%
   subset(Borough != 'Westchester') %>%
   transform(DT = replace(DT, DT == '', NA),
@@ -211,8 +216,10 @@ sys2 = c('data/coned/Networks_May_Sept2024.csv',
   do.call(rbind, .) %>%
   subset(`Network Name` == 'CECONY System') %>%
   subset(select = -c(`Network Name`, Network))
-sys3 = read.csv('data/coned/2026_04 Network_System Hourly Data.csv',
-                check.names = F) %>%
+sys3 = list.files('data/coned', '.*Network_System Hourly Data\\.csv',
+                  full.names = T) %>%
+  lapply(read.csv, check.names = F) %>%
+  do.call(rbind, .) %>%
   subset(`Network Name` == 'System Load', select = -IMPORTID) %>%
   subset(select = -c(`Network Name`, Network))
 sys_peaks = rbind(sys1, sys2, sys3) %>%
