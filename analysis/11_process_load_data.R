@@ -221,7 +221,8 @@ sys3 = list.files('data/coned', '.*Network_System Hourly Data\\.csv',
   lapply(read.csv, check.names = F) %>%
   do.call(rbind, .) %>%
   subset(`Network Name` == 'System Load', select = -IMPORTID) %>%
-  subset(select = -c(`Network Name`, Network))
+  subset(select = -c(`Network Name`, Network)) %>%
+  transform(READING = as.numeric(READING))
 sys_peaks = rbind(sys1, sys2, sys3) %>%
   subset(select = -Borough) %>%
   transform(DT = as.POSIXct(DT, tz = 'EST5EDT', '%m/%d/%Y %H:%M'),
