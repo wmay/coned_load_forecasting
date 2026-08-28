@@ -1,5 +1,15 @@
 # Evaluate daily peak load forecasting methods
 
+# installing torch
+# ubuntu_codename = system2('lsb_release', '-cs', stdout = TRUE)
+# posit_repo = paste0('https://packagemanager.rstudio.com/cran/__linux__/',
+#                     ubuntu_codename, '/latest')
+# kind <- "cu128"
+# version <- available.packages()["torch","Version"]
+# options(repos = c(
+#   torch = sprintf("https://torch-cdn.mlverse.org/packages/%s/%s/", kind, version),
+#   posit = posit_repo
+# ))
 # pkg_deps = c('ncmeta', 'scoringRules')
 # install.packages(pkg_deps)
 # remotes::install_github("mlr-org/mlr3temporal")
