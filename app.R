@@ -158,9 +158,9 @@ server <- function(input, output) {
   map_pals = reactive({
     preds = tv_preds()
     # map color scale
-    map_pal = colorNumeric('viridis', range(preds$tv_mean, na.rm = T))
+    map_pal = colorNumeric('turbo', range(preds$tv_mean, na.rm = T))
     # following https://stackoverflow.com/a/56334156/5548959
-    map_pal_rev = colorNumeric('viridis', range(-preds$tv_mean, na.rm = T), reverse = T)
+    map_pal_rev = colorNumeric('turbo', range(-preds$tv_mean, na.rm = T), reverse = T)
     list(vir = map_pal, vir_r = map_pal_rev)
   })
 
