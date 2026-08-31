@@ -31,7 +31,8 @@ all_tvs = read.csv('scripts/data/tv.csv')
 
 # if coordinates are not in the same order for every variable, `read_mdim` works
 # fine while `read_ncdf` messes up the coordinates
-gefs_3day = read_ncdf('scripts/data/gefs_3day_wmean.nc')
+# gefs_3day = read_ncdf('scripts/data/gefs_3day_wmean.nc')
+gefs_3day = read_ncdf('scripts/data/gefs_3day_wmean_no_backfill.nc')
 
 
 get_valid_day = function(nc, days_ahead) {
@@ -43,12 +44,17 @@ get_valid_day = function(nc, days_ahead) {
 extract_values = function(network, days_ahead) {
   network_idx = which(attr(gefs_3day, 'dimensions')$network$values == network)
   day_idx = days_ahead + 1
-  gefs_3day %>%
+  out = gefs_3day %>%
     dplyr::slice('edt9pm_day', day_idx) %>%
     dplyr::slice('network', network_idx) %>%
     as.data.frame %>%
     transform(day = as.Date(time) + days_ahead) %>%
     subset(select = -c(time, network))
+  # remove unwanted units attributes
+  for (v in names(out)) {
+    if (inherits(out[, v], 'units')) out[, v] = units::drop_units(out[, v])
+  }
+  out
 }
 
 # add observed effective temps to short-term TV forecasts
@@ -58,9 +64,9 @@ fill_incomplete_tv = function(tv, day, network, days_ahead) {
   system_eff_tmp = all_eff_tmps[, c('day', eff_tmps_name)]
   names(system_eff_tmp)[2] = 'eff_temp'
   if (days_ahead == 1) {
-    tv + .1 * system_eff_tmp$eff_temp[match(day - 2, system_eff_tmp$day)]
+    tv * .9 + .1 * system_eff_tmp$eff_temp[match(day - 2, system_eff_tmp$day)]
   } else if (days_ahead == 0) {
-    tv + .2 * system_eff_tmp$eff_temp[match(day - 1, system_eff_tmp$day)] +
+    tv * .7 + .2 * system_eff_tmp$eff_temp[match(day - 1, system_eff_tmp$day)] +
       .1 * system_eff_tmp$eff_temp[match(day - 2, system_eff_tmp$day)]
   }
 }
@@ -97,7 +103,7 @@ prepare_newdata = function(network, days_ahead = 0) {
   out %>%
     subset(select = -day) %>%
     # na.omit %>%
-    transform(fct_err = as.numeric(NA)) %>%
+    transform(fct_err = 0) %>%
     as_task_regr('fct_err', id = id)
 }
 

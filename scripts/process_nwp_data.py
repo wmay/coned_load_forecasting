@@ -51,7 +51,7 @@ def get_all_0p5(ds_string):
     ds_0p5b = xr.open_dataset(nc_0p5b).\
         mean('number')
     ds_0p5 = xr.open_dataset(nc_0p5).\
-        squeeze().\
+        squeeze('number').\
         drop_vars('number')
     return xr.merge([ds_0p5, ds_0p5b])
 
@@ -164,15 +164,22 @@ def nan_prop(arr):
 # fixed in script 7
 # ---------------
 
-def get_3day_wmean(ds):
+def get_3day_wmean(ds, backfill=True):
     '''Get a 3-day weighted mean, using ConEd's TV weights.
     '''
-    # get everything to line up
-    ds_m1 = ds.copy()
-    ds_m2 = ds.copy()
-    ds_m1['edt9pm_day'] = ds['edt9pm_day'] + 1
-    ds_m2['edt9pm_day'] = ds['edt9pm_day'] + 2
-    return ds * .7 + ds_m1 * .2 + ds_m2 * .1
+    ds_m1 = ds.shift(edt9pm_day=1)
+    ds_m2 = ds.shift(edt9pm_day=2)
+    if backfill:
+        out = ds * .7 + ds_m1 * .2 + ds_m2 * .1
+    else:
+        out0 = ds.sel(edt9pm_day=slice(0, 0))
+        out1 = (ds.sel(edt9pm_day=slice(1, 1)) * .7 +\
+                ds_m1.sel(edt9pm_day=slice(1, 1)) * .2) / .9
+        out2to7 = ds.sel(edt9pm_day=slice(2, None)) * .7 +\
+            ds_m1.sel(edt9pm_day=slice(2, None)) * .2 +\
+            ds_m2.sel(edt9pm_day=slice(2, None)) * .1
+        out = xr.concat([out0, out1, out2to7], 'edt9pm_day')
+    return out.sel(edt9pm_day=slice(0, None))
 
 gefs_0p5_daily = get_daily_avg(gefs_0p5)
 # gefs_0p5_daily.to_netcdf('results/process_nwp_data/gefs_0p5_daily.nc')
@@ -307,3 +314,30 @@ gefs_tv = xr.merge([gefs_tv_members.mean('number'),
 
 gefs_3day_wmean = xr.merge([gefs_0p5_3day_wmean, gefs_0p25_3day_wmean, gefs_tv])
 gefs_3day_wmean.to_netcdf(out_dir + '/gefs_3day_wmean.nc')
+
+# Forecast-only version: no backfill
+gefs_0p5_fct_only = gefs_0p5_fct.interp(
+    latitude=centroids_ds['latitude'],
+    longitude=centroids_ds['longitude'],
+    kwargs={'fill_value': None})
+gefs_0p5_fct_only = add_system_average(gefs_0p5_fct_only, network_peaks['reading'])
+gefs_0p5_fct_3day_wmean = get_3day_wmean(get_daily_avg(gefs_0p5_fct_only), backfill=False)
+
+gefs_0p25_fct_only = gefs_0p25_fct.interp(
+    latitude=centroids_ds['latitude'],
+    longitude=centroids_ds['longitude'],
+    kwargs={'fill_value': None})
+gefs_0p25_fct_only = add_system_average(gefs_0p25_fct_only, network_peaks['reading'])
+gefs_0p25_fct_daily = get_daily_avg(gefs_0p25_fct_only)
+gefs_0p25_fct_daily['eff_temp'] = gefs_fct_eff_temp.mean('number').\
+    transpose('edt9pm_day', 'time', 'network')
+gefs_0p25_fct_3day_wmean = get_3day_wmean(gefs_0p25_fct_daily, backfill=False)
+
+gefs_tv_members_fct = get_3day_wmean(gefs_fct_eff_temp, backfill=False).rename('TV')
+gefs_tv_fct = xr.merge([gefs_tv_members_fct.mean('number'),
+                        gefs_tv_members_fct.std('number').rename('TV_sd')]).\
+    transpose('edt9pm_day', 'time', 'network')
+
+gefs_3day_wmean_fct = xr.merge(
+    [gefs_0p5_fct_3day_wmean, gefs_0p25_fct_3day_wmean, gefs_tv_fct])
+gefs_3day_wmean_fct.to_netcdf(out_dir + '/gefs_3day_wmean_no_backfill.nc')

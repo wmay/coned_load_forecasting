@@ -5,6 +5,9 @@ import os, dask, time, warnings
 # os.chdir('..')
 # https://docs.xarray.dev/en/stable/user-guide/dask.html#reading-and-writing-data
 os.environ['HDF5_USE_FILE_LOCKING'] = 'FALSE'
+# prevent wgrib2 (called by Herbie) from using multiple cores within dask
+# workers
+os.environ['OMP_NUM_THREADS'] = '1'
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
@@ -99,7 +102,7 @@ def make_collection_args(DATES, fxx, model, products, search):
 # Some common variables
 
 # just use a LocalCluster
-client = Client(processes=False, n_workers=10)
+client = Client(processes=False, n_workers=5, threads_per_worker=1, memory_limit='4GB')
 # client.wait_for_workers(1)
 
 # NYC lat/lon boundaries

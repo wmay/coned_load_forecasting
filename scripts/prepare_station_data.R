@@ -78,7 +78,7 @@ asos_obs = stations %>%
   getElement('stid') %>%
   paste0('K', .) %>%
   lapply(function(x) {
-    out = riem_measures(x, date_start = cur_date - 7)
+    out = riem_measures(x, date_start = cur_date - 7, report_type = 'routine')
     # "Due to incessant requests against this service a 1 second per-IP throttle
     # is now in place":
     # https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py?help
