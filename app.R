@@ -74,6 +74,7 @@ setShapeLabel <- function(map, data = getMapData(map), layerId, label = NULL,
 }
 
 maintainence_msg = 'Note: Individual network forecasts may not be accurate during plant maintenance or if a network has been recently altered.'
+load_warning = 'Warning: Load data is more than 3 months old, which may cause inaccurate load forecasts.'
 table_discl = 'Note that individual ConEd networks may have different design criteria thresholds than the thresholds for the ConEd system as a whole (82, 84, 86).'
 
 ui = fluidPage(
@@ -86,6 +87,7 @@ ui = fluidPage(
     ),
     uiOutput('date_note'),
     uiOutput('month_warning'),
+    # p(load_warning, style = 'color: #E80202;'),
     p(maintainence_msg),
     hr(),
     fluidRow(

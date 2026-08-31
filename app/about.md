@@ -22,7 +22,7 @@ notably the sea breeze, which has the largest impact on the southern coast of
 Long Island.
 
 A previous summary of the project is available at
-<https://nyswrcc.org/coeweather/coned/documents/ualbany_micronet_forecasting_2024.pdf>.
+<https://nyswrcc.org/coeweather/coned/documents/ualbany_micronet_forecasting_2026.pdf>.
 
 A technical explanation of the forecast models is at
 <https://github.com/wmay/coned_load_forecasting/blob/main/models.md>.
