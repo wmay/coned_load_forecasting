@@ -42,8 +42,14 @@ get_combined_nc_data = function(vars = NULL, times = NULL, cur_date) {
 get_combined_eff_tmp = function(stids) {
   tmp_cols = paste0('tmpf.', stids)
   dwp_cols = paste0('dwpf.', stids)
-  tmps = rowMeans(station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
-  dwps = rowMeans(station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
+  tv_station_obs = station_obs[, c(tmp_cols, dwp_cols), drop = FALSE]
+  for (x in c(tmp_cols, dwp_cols)) {
+    # ConEd uses the celsius numbers, which are derived in the ASOS system from
+    # the fahrenheit numbers
+    tv_station_obs[, x] = round(as_celsius(tv_station_obs[, x]), 1)
+  }
+  tmps = rowMeans(tv_station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
+  dwps = rowMeans(tv_station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
   out = coned_effective_temp(station_obs$time, tmps, dwps)
   row.names(out) = as.character(out$day)
   out
@@ -56,8 +62,14 @@ get_combined_eff_tmp = function(stids) {
 get_combined_tv = function(stids) {
   tmp_cols = paste0('tmpf.', stids)
   dwp_cols = paste0('dwpf.', stids)
-  tmps = rowMeans(station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
-  dwps = rowMeans(station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
+  tv_station_obs = station_obs[, c(tmp_cols, dwp_cols), drop = FALSE]
+  for (x in c(tmp_cols, dwp_cols)) {
+    # ConEd uses the celsius numbers, which are derived in the ASOS system from
+    # the fahrenheit numbers
+    tv_station_obs[, x] = round(as_celsius(tv_station_obs[, x]), 1)
+  }
+  tmps = rowMeans(tv_station_obs[, tmp_cols, drop = FALSE], na.rm = TRUE)
+  dwps = rowMeans(tv_station_obs[, dwp_cols, drop = FALSE], na.rm = TRUE)
   out = coned_tv(station_obs$time, tmps, dwps)
   row.names(out) = as.character(out$day)
   out
